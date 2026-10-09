@@ -1,0 +1,26 @@
+# Architecture
+
+## Current implementation
+
+Browser React application → same-origin Bun HTTP API → SQLite state/audit/registry.
+
+`src/domain.ts`: validated deterministic research functions and shared types.
+`src/store.ts`: transactions, bot state, persistent halt, runs and immutable registration.
+`src/server.ts`: loopback API, origin/host boundaries, static build serving and safe restart.
+`src/web/`: terminal UI; backend remains authoritative for actions and risk constraints.
+
+SQLite is appropriate for this single-user local control plane, not the final multi-host ledger. Runs are JSON evidence snapshots. Hashes identify evidence; they are not signatures or tamper-proof attestations. Registry insertion is idempotent by run ID. UI polls state every three seconds; displayed sync time is a control-plane response time, not a market heartbeat.
+
+## Target execution protocol
+
+Add an isolated Python/NautilusTrader service only after broker and venue selection. Strategy emits OrderIntent containing stable ID, bot/version/account/instrument, side, quantity, order type, price constraints, expiry and source data timestamps. Account risk authority reserves aggregate exposure before forwarding. Execution publishes acknowledgments, fills, rejection/unknown states and reconciliation results. Use decimal/integer tick money representation at the execution boundary; JavaScript floating-point research arithmetic is not a financial ledger.
+
+The execution service owns broker credentials; browser and research agents never receive them. Durable command deduplication and reconciliation, not delivery claims, establish effective execution state. The risk service must remain authoritative if UI, database projections or research fail.
+
+## Adding bots
+
+Current profiles are seeded once in Store; existing databases are not silently migrated by editing the seed. A future plugin includes identity/capabilities, immutable strategy artifact, accepted instrument schema, bounded risk policy, observation interface, signal generation and lifecycle hooks. New asset adapters must declare precision, fees, calendars, market data semantics and reconciliation capabilities. Do not add a bot by giving arbitrary code broker access.
+
+## Dependency decisions
+
+React/TypeScript for terminal; Bun for local API/testing/SQLite; Vite for frontend build. Later evaluate pinned NautilusTrader, skfolio for multi-strategy allocations, OpenBB for enrichment and research-only model/agent services. No repository popularity or model forecast substitutes for measured edge.
