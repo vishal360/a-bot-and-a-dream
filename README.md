@@ -14,6 +14,8 @@ bun start
 
 Open **http://127.0.0.1:3000**. `bun run check` runs TypeScript checking, unit/integration tests and the production frontend build. After frontend changes, rebuild with `bun run build`; restart the server for backend changes. `bun run dev` starts the same local server and serves the last production build; it is not an HMR server. Override `PORT` if needed.
 
+For the full check plus isolated production HTTP/static-asset smoke test, run `bun run scripts/verify.ts`. This writes an ignored `validation.log` with command results. Browser visual/E2E verification is not included in this release.
+
 ## Included
 
 - Responsive React mission-control interface with six workspaces.
