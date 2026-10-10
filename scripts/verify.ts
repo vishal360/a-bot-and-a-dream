@@ -20,6 +20,6 @@ try {
   const health = await (await fetch(base + '/api/health')).json();
   if (health.liveTrading !== false || health.brokerConnected !== false) throw new Error('Unsafe health flags');
   await Bun.write('validation.log', await Bun.file('validation.log').text() + 'PRODUCTION_HTTP_SMOKE=PASS\n');
-  console.log('PASS: typecheck, 11 tests, production build, static assets and HTTP health. See validation.log.');
+  console.log('PASS: typecheck, test suite, production build, static assets and HTTP health. See validation.log.');
 } finally { proc.kill(); await proc.exited; rmSync(dir, { recursive: true, force: true }); }
 export {};

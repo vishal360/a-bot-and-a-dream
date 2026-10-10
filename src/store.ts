@@ -4,6 +4,8 @@ export class Store {
   db: Database;
   constructor(path: string) {
     this.db = new Database(path, { create: true });
+    // Paper settlements must survive power loss, not just process restarts.
+    this.db.exec('PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000');
     this.db.exec(`PRAGMA journal_mode=WAL; CREATE TABLE IF NOT EXISTS state (key TEXT PRIMARY KEY, value TEXT NOT NULL); CREATE TABLE IF NOT EXISTS audit (id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT NOT NULL, action TEXT NOT NULL, detail TEXT NOT NULL); CREATE TABLE IF NOT EXISTS runs (id TEXT PRIMARY KEY, time TEXT NOT NULL, result TEXT NOT NULL); CREATE TABLE IF NOT EXISTS strategies (id TEXT PRIMARY KEY, time TEXT NOT NULL, run_id TEXT UNIQUE NOT NULL, hash TEXT NOT NULL, status TEXT NOT NULL);`);
     if (!this.get('bots')) this.set('bots', [
       { id: 'atlas', name: 'ATLAS / 01', asset: 'futures', symbol: 'MES', status: 'paused', strategy: 'Channel breakout v1', createdAt: new Date().toISOString(), description: 'Equity-index futures · paper research profile' },
@@ -22,7 +24,7 @@ export class Store {
       bot.status = action === 'start' ? 'running' : 'paused'; this.set('bots', bots); this.audit(action, id);
     })();
   }
-  halt() { this.db.transaction(() => { this.set('halted', true); this.set('bots', (this.get('bots') as Bot[]).map(b => ({ ...b, status: 'halted' }))); this.audit('EMERGENCY_HALT', 'All paper runners halted; no broker is connected.'); })(); }
+  halt() { this.db.transaction(() => { this.set('halted', true); this.set('bots', (this.get('bots') as Bot[]).map(b => ({ ...b, status: 'halted' }))); this.audit('EMERGENCY_HALT', 'Paper exposure increases halted; positions remain open. External brokers are not controlled.'); })(); }
   reset() { this.db.transaction(() => { this.set('halted', false); this.set('bots', (this.get('bots') as Bot[]).map(b => ({ ...b, status: 'paused' }))); this.audit('RESET_HALT', 'Runners remain paused; explicit start required.'); })(); }
   saveRun(result: Result) { const id = crypto.randomUUID(); this.db.query('INSERT INTO runs VALUES (?,?,?)').run(id, new Date().toISOString(), JSON.stringify(result)); this.audit('BACKTEST', id); return id; }
   promote(id: string) {

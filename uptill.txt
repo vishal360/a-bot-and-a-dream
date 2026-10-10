@@ -1,0 +1,404 @@
+A BOT AND A DREAM — PROJECT HISTORY AND HANDOVER
+================================================
+Prepared: 2026-10-10
+Repository: https://github.com/vishal360/a-bot-and-a-dream
+Project directory on the original machine:
+C:\Users\Awperation\.cline\data\workspaces\chat\trading-terminal
+
+1. PURPOSE AND HOW TO READ THIS DOCUMENT
+----------------------------------------
+This is a detailed project narrative and technical handover: what we are trying
+to achieve, what exists, how it was implemented, why the design changed, what
+has been tested, and what must happen next. It is not a verbatim chat export.
+It reconstructs the available conversation summary, current conversation,
+repository documentation, code, commit history and readable verification logs.
+Earlier chat messages are not all available in this session; their exact wording
+and dates cannot be reconstructed reliably. Statements about earlier work are
+therefore project-history summaries, not invented quotations.
+
+The reasoning here is a record of engineering decisions, alternatives and
+trade-offs. It distinguishes implemented capabilities from future intentions.
+No credentials, private keys, tokens, local databases or account balances are
+included. This file is intended to be safe to commit alongside source code.
+
+2. THE GOAL
+-----------
+Build a local-first trading workspace that an operator can understand, inspect
+and control, initially using paper money and real public market observations.
+Eventually investigate agent-assisted or agentic trading, but only after the
+manual experience, accounting, execution simulation and risk boundaries have
+earned trust. This is not an assertion that an AI strategy is profitable.
+
+The immediate user priority is a coherent manual paper-trading terminal:
+chart, order entry, holdings, average prices, P&L and execution history together.
+The user rejected the fragmented interface and wanted this redesigned before
+we proceeded to agentic trading. The manual workspace must be accepted first.
+
+Longer-term direction:
+* Research reproducible strategies on appropriate, provenance-verified data.
+* Compare realistic results with baselines and untouched evaluation windows.
+* Paper-forward-test with conservative execution and independent risk controls.
+* Introduce isolated agents that propose structured intents, not unrestricted
+  broker orders or arbitrary edits to production strategy code.
+* Consider real venue execution only as a separate, explicitly approved project
+  with authentication, reconciliation, failure drills and readiness evidence.
+
+3. CONVERSATION AND DEVELOPMENT HISTORY
+---------------------------------------
+A. Initial terminal and research foundation
+The earlier implementation created a science-fiction-inspired React terminal,
+local Bun server, SQLite persistence, research backtesting, bot profiles and
+persistent risk controls. Profiles include ATLAS (MES futures research) and
+ORION (BTC-USD crypto research). Names/profiles do not mean deployed strategies.
+
+The research engine is a deterministic long-only channel breakout: a completed
+bar breaking the previous N highs creates a next-open entry. Exits use a fixed
+stop, completed-bar lower-channel signal at the next open, or final close.
+Gaps through stops execute at the worse of stop/open before adverse slippage.
+Futures quantities are whole contracts; MES research uses multiplier 5.
+Uploaded OHLC and explicitly labeled synthetic inputs support research plumbing.
+Neither synthetic nor unverified uploaded results establish trading edge.
+
+Recent existing commits before this publishing request:
+db9189b — Build paper-first trading terminal with research lab, risk controls and tests
+a68e937 — Build paper-first terminal, research lab, persistent risk controls and tests
+dac0019 — Add reproducible production smoke verification
+The changes described below were present locally but not yet in those commits.
+
+B. Operations, imports and transparency
+The project grew a historical ledger, account-scoped analytics, broker history
+sync, an encrypted credential vault, external fill ingestion, allocation preview,
+market views, journal and archive/reset tools. That made it useful as a control
+plane, but it also produced too many separate screens for basic manual trading.
+
+Alpaca paper/live and Binance spot adapters are read-only. Imported fills are
+observed historical facts, not authorization to send orders. External bots may
+submit authenticated historical fills/marks/heartbeats to local ingestion routes.
+They must enforce halt themselves; this terminal does not control real orders.
+
+C. Lighter investigation and safety correction
+Public Lighter observations and account reads were added, with mainnet/testnet
+distinguished. Public account existence is not signer authentication. Synthetic
+production order/start/flatten behavior was disabled rather than presented as
+real venue execution. The legacy synthetic engine remains for regression tests.
+An earlier secret exposure is noted by project documentation; no secret is
+reproduced here. Any exposed key must be rotated, never reused from chat.
+
+D. Revised scope: mainnet-data LOCAL paper simulation
+The direction changed away from venue testnet signing to an independent local
+simulator driven by public mainnet depth. No funded account, signer or private
+key is needed for the current manual paper scope. Old signer/testnet checklists
+remain historical references, not prerequisites for this local simulation.
+
+The simulator has separate $10,000 simulated starting cash in paper-mainnet,
+BTC only, long-only, unleveraged, cash collateralized, with manual IOC orders.
+It is not a complete perpetual account and not an actual spot venue adapter.
+
+E. Precision, durability and accounting hardening
+Matching was moved to integer price/size economics and recorded depth legs.
+Monetary reporting was then moved to a replayable integer settlement ledger.
+Persistence, daily-loss checks, restart recovery, observation retention and
+conservative treatment of repeatedly observed REST liquidity were strengthened.
+Browser tests were added to exercise actual frontend/backend manual workflows.
+
+F. User correction: make trading one cohesive screen
+The user explicitly rejected the fragmented trading experience. The redesign
+consolidated chart, account overview, position, execution averages, order ticket,
+allocation and history in a default Trading workspace. Agent development was
+deferred until the operator accepts this manual workspace.
+
+G. Latest visible conversation
+The screenshots supplied show desktop and mobile-sized views of the revised
+workspace, scrolled down, after a test closed its position and latched halt.
+They show a flat holding and disabled order buttons, not a broken buy workflow.
+The assistant explained the redesign and its recorded-observation chart limit.
+The user asked how to view it: build and start locally, then open
+http://127.0.0.1:3000. The user then requested all current work be pushed to the
+existing GitHub repository with this detailed history file named uptill.
+This document uses uptill.txt so it is explicitly a plain-text file.
+
+4. WHAT IS BUILT TODAY
+----------------------
+Manual Trading workspace
+* Default navigation is Trading, not a fragmented operations landing page.
+* Equity, cash, realized/unrealized P&L and fees are available together.
+* A price observation chart and realized-equity history can be inspected.
+* Bid, ask and spread appear beside the execution context.
+* Position amount, remaining average entry and position value are visible.
+* All-fill average buy and sell prices are quantity-weighted, excluding fees.
+* IOC ticket shows quantity, estimated cost/fee, remaining buy budget and venue
+  minimum quote/base requirements. Estimates are not execution guarantees.
+* Allocation can be edited inside the workspace rather than by a page detour.
+* Orders, Fills, Closed trades and Statistics are consolidated history tabs.
+* Specific risk rejection messages distinguish allocation, cash, per-order cap,
+  gross exposure, allocation cap and venue minimum requirements.
+* Emergency halt and the paper environment remain explicit safety context.
+* The layout adapts to desktop and narrow viewports; caveats are expandable.
+
+Supporting workspaces retain Portfolio & risk, Markets, Strategy & trade journal,
+Backtest lab, Connections & API, and System & audit functionality. Some underlying
+components still contain legacy section branches; their presence in code is not
+proof that all older screens remain primary navigation items.
+
+5. ARCHITECTURE AND FILE GUIDE
+------------------------------
+Browser React/TypeScript application
+    -> same-origin HTTP JSON API implemented with Bun
+    -> SQLite persistence and local encrypted credential storage
+    -> read-only public/provider requests and independent local paper matching
+
+React and TypeScript provide one language across UI and server types. Vite
+produces the frontend assets. Bun runs the server, tests and SQLite integration.
+SQLite suits a single-user local control plane with transactions; it is not
+represented as a final distributed, multi-host execution ledger.
+
+Key files (paths relative to repository root):
+src/domain.ts             Deterministic research rules and shared types.
+src/store.ts              Persistence, state, audit, runs and strategy registration.
+src/server.ts             Local API, request boundaries, build serving and recovery.
+src/operations.ts         Historical accounts, imports, connections and analytics.
+src/ledger.ts             General imported/legacy account accounting.
+src/vault.ts              AES-256-GCM encrypted secret storage.
+src/lighter.ts            Public venue observations and connection-related reads.
+src/execution-risk.ts     Internal durable reservation/risk foundation.
+src/readiness.ts          Explicit incomplete gates; agents/execution disabled.
+src/paper.ts              Manual simulator, depth observation, IOC lifecycle/risk.
+src/paper-math.ts         Integer decimal/precision/matching economics.
+src/paper-ledger.ts       Integer settlement replay and manual-account analytics.
+src/web/main.tsx          Application shell and navigation.
+src/web/PaperAccount.tsx  Consolidated manual Trading workspace.
+src/web/terminal.css      Workspace-specific responsive styling.
+src/web/OperationsConsole.tsx  Supporting operations views and dispatch.
+src/web/MarketBoard.tsx   Public market view.
+src/web/PortfolioAllocation.tsx  Allocation configuration/preview.
+src/web/LighterConnection.tsx   Lighter connection UI.
+src/web/StatsArchive.tsx  Archive/reset controls.
+src/web/StrategyJournal.tsx     Strategy and stored-fill transparency.
+tests/                    Research, HTTP, persistence, risk and accounting tests.
+e2e/paper.pw.ts           Desktop/mobile-sized manual acceptance workflow.
+playwright.config.ts     Microsoft Edge browser-test configuration.
+scripts/verify.ts         Reproducible check/build/production HTTP smoke harness.
+scripts/paper-feed-check.ts  Read-only feed diagnostic, not an order exercise.
+
+6. EXECUTION MODEL AND WHY IT IS CONSERVATIVE
+--------------------------------------------
+Buy IOC consumes visible asks; sell IOC consumes visible bids. Matching uses
+venue precision/minimums and a 50-basis-point price collar, after modeled delay.
+Insufficient liquidity means partial fill and cancellation of the remainder.
+Mark/index values are not used as unlimited executable liquidity. There is no
+synthetic-feed fallback if public depth is unavailable or invalid.
+
+Configured assumptions include a 2-basis-point fee per side and 300 ms delay
+plus request duration. Those are simulator assumptions, not certified venue
+terms. Lighter tier/fee and latency assumptions must be pinned and calibrated
+before stronger conclusions about execution realism.
+
+REST snapshots are not sequenced exchange events. The same visible liquidity
+can appear on repeated requests without proof it replenished. Consumption is
+therefore persisted by market/side/price across refresh/restart; repeated REST
+liquidity is not automatically reusable. This may deliberately underfill until
+sequenced replenishment is implemented. It is safer than fabricating capacity.
+
+Observations and executed depth evidence persist. Unreferenced raw observations
+have a rolling 1,000-record bound, while observations supporting executed orders
+are retained. Pending orders become rejected after restart rather than replayed.
+Recovery scans all pending records, not only a UI display limit. Manual trading
+reopens paused, so restart never silently reactivates exposure.
+
+7. ACCOUNTING DEFINITIONS AND IMPORTANT DISTINCTIONS
+----------------------------------------------------
+Manual-account settlement uses BTC atoms (1e-8 BTC), quote micro-dollars and
+BigInt arithmetic. Versioned settlement strings are stored with fills atomically.
+Cash, inventory, cost basis, realized P&L and valuation share ledger replay.
+Legacy records are not silently rewritten: historical quote/fee values are
+rounded to micro-dollars during replay and counted as legacy fills.
+
+Partial closes allocate cost basis/fees and retain the integer remainder until
+final close, so rounding does not lose micro-dollars. Corrupt settlements,
+oversells and negative-cash histories fail closed rather than invent balances.
+
+Average buy/sell: sum(quantity * execution price) / sum(quantity), separately
+for each side across fills; fees excluded. These describe execution history.
+Position average entry: remaining inventory cost basis, not the historical
+average of every buy after some inventory has been closed.
+Closed trade metrics include allocated fees; partial exits are closed legs,
+not necessarily complete round-trip trades. Realized equity/drawdown history
+does not claim to reconstruct historical unrealized marked-to-market equity.
+Daily aggregation is UTC. Imported accounts are separate and can have incomplete
+inventory/deposit history; their curves are not certified broker NAV.
+
+8. RISK AND SECURITY BOUNDARIES
+-------------------------------
+New manual buys require explicit enablement, positive allocation, sufficient
+cash, valid depth, and compliance with order/account limits and halt policy.
+Selling only reduces existing BTC; it cannot open a short. Reducing while
+paused/halted is allowed so a safety stop does not trap existing exposure.
+Loss checks run on observations and inside fill transactions, including fees.
+The loss latch persists; routine reset is not a bypass. Its daily baseline is
+first observed UTC-day equity, not independently verified midnight equity.
+
+ExecutionRisk is a distinct internal foundation: transactional shared budgets,
+durable reservations, integer comparisons, connection generation/freshness,
+immutable daily baselines and persistent cash-flow-adjusted loss controls.
+The documented general ceilings include 20x leverage and 6% daily loss, but
+these do NOT mean the manual simulator supports leverage or that live risk is
+operational. The manual simulator remains 1x. Full connected reconciliation,
+baseline provenance and reservation lifecycle remain incomplete.
+
+The service binds loopback and has no multi-user authentication. Same-origin,
+host validation and CSP reduce local web attack surfaces but do not replace
+authentication. Do not publish it through tunnels or reverse proxies.
+Secrets are AES-256-GCM encrypted in SQLite; data/vault.key is local and ignored.
+A backup of both database and key can decrypt secrets. OS access control and
+local-machine security still matter. Ingestion tokens are stored as hashes,
+shown at generation and revocable by rotation.
+
+Statistics archives are transactional local records, not independent backups.
+Open positions block destructive history reset; mainnet simulation fills also
+restrict reset to preserve cash and baseline continuity. Session archival needs
+more work. Halt never claims to cancel/flatten real broker or external-bot orders.
+
+9. WHY THE INTERFACE WAS REDESIGNED
+-----------------------------------
+Reliable accounting and risk controls were necessary; scattering basic trading
+across pages was not. The operator should be able to answer in one place:
+What is the market? What do I hold? What is my cost? What is my P&L? Can I trade?
+What happened to my last order? What budget is left? Why was an order rejected?
+
+The redesign brought those answers together while retaining honest semantics:
+* Recorded observations instead of fabricated candlesticks.
+* Realized equity instead of invented historical unrealized performance.
+* Remaining position cost separated from all-fill execution averages.
+* Estimated budget labeled indicative, with final fresh-depth checks authoritative.
+* Paper mode, halt state and simulation limitations kept distinct from live trading.
+
+PaperAccount.tsx was recreated after an initial combined delete/add patch failed;
+separate deletion and recreation succeeded. The surrounding shell/navigation,
+paper session payload, analytics, CSS and browser assertions were updated too.
+
+10. VERIFICATION EVIDENCE AND WHAT IT DOES NOT PROVE
+---------------------------------------------------
+Earlier shell/read results were temporarily blank. At that point, no successful
+tests could responsibly be claimed. Later readable logs provided evidence:
+redesign-verify.log: typecheck, suite, build, assets and HTTP health PASS, EXIT=0.
+validation.log: 48 pass, 0 fail, 360 assertions across 9 files; CHECK_EXIT=0 and
+PRODUCTION_HTTP_SMOKE=PASS.
+redesign-browser.log: two Playwright workflows passed, desktop-edge and
+mobile-edge, EXIT=0. The screenshots were supplied in this conversation.
+redesign-whitespace.log: EXIT=0 with LF/CRLF normalization warnings.
+
+Coverage includes deterministic/no-look-ahead research, request boundaries,
+persistent halts, integer precision, partial-close conservation, legacy replay,
+invalid settlements, allocation failures, depth partial fills, order deduplication,
+freshness/failure handling, restart-paused recovery and halted reduction.
+The browser workflow exercises actual frontend/backend interaction and uses
+deterministic isolated depth/state, not real venue order submission.
+
+This evidence is software validation, not profitability, exchange conformance,
+physical-phone testing, Safari acceptance, full visual regression or production
+readiness. User acceptance of the redesigned manual workspace is outstanding.
+New pre-publish reruns should be reported separately from the historical logs;
+if command completion is not observable, do not silently call a rerun passed.
+
+Pre-publish reruns on 2026-10-10 subsequently produced readable evidence:
+publish-verify.log reports the complete verification harness PASS and EXIT=0.
+publish-browser.log reports both Edge workflows passed (7.7 seconds), EXIT=0.
+publish-staged-check.log reports the staged whitespace check EXIT=0.
+The staged file list excludes private/generated directories; a targeted scan
+for common credential formats found no matches. This is a practical publishing
+check, not a comprehensive security audit. The logs remain ignored locally.
+
+11. RUNNING AND REPRODUCING THE PROJECT
+---------------------------------------
+Prerequisite: Bun (project documentation reports testing with 1.4.2).
+In PowerShell:
+  cd "C:\Users\Awperation\.cline\data\workspaces\chat\trading-terminal"
+  bun install --frozen-lockfile
+  bun run build
+  bun start
+Then open http://127.0.0.1:3000 and keep the server terminal running.
+Trading is the default workspace. Ctrl+F5 refreshes cached frontend assets.
+
+bun run dev starts the same server against the LAST BUILT frontend, not an
+HMR development server. Rebuild after frontend changes and restart after
+backend changes. PORT can override the local default.
+
+Verification commands:
+  bun run scripts/verify.ts
+  bun run test:e2e
+  git diff --check
+The first runs type checking/tests/build and isolated HTTP/static-asset checks.
+The browser suite uses installed Microsoft Edge. Temporary test databases,
+screenshots and reports are not committed. Stop the server before backing up
+the complete local data directory including SQLite WAL sidecars. Never commit it.
+
+12. KNOWN LIMITATIONS AND NEXT ACCEPTANCE GATES
+----------------------------------------------
+Current incomplete capabilities:
+* Sequenced WebSocket depth/trades, exchange timestamps, gap recovery and
+  continuously validated replenishment/freshness.
+* Full perpetual funding, shorts, margin, liquidation and reconciliation.
+* Resting limits, conservative queue priority, stops and cancellation races.
+* Fully connected reservation lifecycle and trusted midnight/cash-flow baseline.
+* Complete session lifecycle/archival, retention and failure-drill evidence.
+* Provenance-verified historical strategy data, frozen holdouts and walk-forward
+  evaluation, and sustained forward paper evidence.
+* Agent workers, model provider/budget configuration and a typed-intent pipeline.
+* Live order adapters, authentication/signing and operational live readiness.
+
+Immediate next work:
+1. Have the user open the redesign and accept or correct its layout/workflow.
+2. Review full-page desktop/mobile visuals, stale/missing-feed and risk-halt
+   visibility, allocation saving, enable/pause, buy/partial fill/close, all tabs,
+   chart switching and rejection messages.
+3. Improve market data and simulator realism, not merely the number of screens.
+4. Complete accounting/risk reconciliation and disconnect/restart failure drills.
+5. Gather strategy validation and forward evidence before introducing agents.
+
+Future agents should be isolated, bounded by time/token/cost budgets, unable to
+access broker secrets or bypass limits, and emit stable typed intents including
+strategy version, instrument, side, quantity, price constraints and source times.
+One executor/risk authority should own authorization, idempotency, queues and
+order writes. Agents must not reset halts, silently change strategy artifacts,
+raise leverage autonomously or multiply a shared allocation by agent count.
+
+User inputs still needed include exact instrument scope (crypto perpetuals versus
+CME MES/ES), symbols/timeframes, holding horizon, fee tier, risk limits, capital,
+session/reset behavior, data provenance, strategy rules, evaluation criteria,
+agent roles/provider/spending budget and deployment/backup/alert expectations.
+CME requires an appropriate licensed feed; crypto is not an MES price substitute.
+
+13. DOCUMENTATION MAP AND PRECEDENCE
+-------------------------------------
+README.md: install/run overview.
+docs/ARCHITECTURE.md: local architecture and target execution protocol.
+docs/OPERATIONS.md: imports, vault, ingestion, accounting and operations.
+docs/ASSESSMENT.md: incremental implementation assessment and open backlog.
+docs/PAPER_MAINNET.md: current revised scope and conservative local paper plan.
+docs/LIGHTER.md: integration history and earlier venue/signing roadmap.
+docs/PREREQUISITES.md: execution/risk/research acceptance gates.
+docs/LIVE_READINESS.md: separate future live-readiness requirements.
+
+Some older docs still name old screens or outstanding work since implemented,
+and include historical testnet gates. Read them as evolving design records;
+the revised local paper scope supersedes signer/testnet prerequisites for local
+simulation. Current code/tests are authoritative for actual implemented behavior.
+No document overrides the explicit disabled readiness flags for agents/live work.
+
+14. GITHUB HANDOVER POLICY
+--------------------------
+Publish source, tests, lockfile, configuration, documentation and this history.
+Do not publish node_modules, dist, data, .env, logs, credentials, test artifacts
+or browser reports. The .gitignore excludes the ordinary generated/private paths.
+The repository remote inspected for this request is origin on main at
+https://github.com/vishal360/a-bot-and-a-dream.git.
+Publishing code is not authorization to activate agents or live trading.
+
+BOTTOM LINE
+-----------
+We have built a local paper-first terminal with research tools, persistence,
+imports, security boundaries and an increasingly conservative manual simulator.
+The latest improvement makes manual trading one coherent workspace. Our aim is
+not to jump from an attractive UI to autonomous trading: it is to earn confidence
+through understandable workflows, exact accounting, realistic data/execution,
+independent risk and reproducible evidence, then consider bounded agents.
