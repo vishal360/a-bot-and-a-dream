@@ -1,9 +1,103 @@
 A BOT AND A DREAM — PROJECT HISTORY AND HANDOVER
 ================================================
-Prepared: 2026-10-10
+Updated: 2026-10-13 (current update below; earlier history retained)
 Repository: https://github.com/vishal360/a-bot-and-a-dream
 Project directory on the original machine:
 C:\Users\Awperation\.cline\data\workspaces\chat\trading-terminal
+
+CURRENT HANDOVER — OCTOBER 13 UPDATE (supersedes older backlog below)
+--------------------------------------------------------------------
+Since the previous GitHub publication, the local manual terminal gained:
+* Sequenced read-only Lighter WebSocket depth, mark/index/last/funding statistics,
+  public trade evidence, bounded durable journal, gap/freshness recovery and
+  snapshot-rooted replay. Browser account state uses bounded SSE, not polling.
+* Dynamic perpetual market selection, explicit market/limit IOC, cancellation,
+  durable shared reservations and idempotency, restart fencing/recovery,
+  reductions and persistent short-aware local stop/target protections.
+* Settlement-v2 signed long/short accounting. Both sides reserve margin; short
+  sale proceeds are not spendable, and leverage does not multiply P&L. Close
+  before reversing. Legacy fill bytes/economics are preserved.
+* Hourly history-derived funding with source identity/hash evidence, historical
+  holdings, one-hour conservative delay, gaps/deduplication and restart safety.
+  Funding uses strict pre-timestamp holdings as an UNVERIFIED venue-ordering
+  assumption. It is not projected stream funding or certified venue settlement.
+* Account-level initial/maintenance/closeout margin, conservative metadata
+  fallback and approximate durable depth-IOC liquidation. Partial exposure stays
+  open, consumed liquidity is not reused, and the disclosed 1% executed-notional
+  surcharge is a simulation assumption, not Lighter's zero-price/LLP/ADL formula.
+* Baseline provenance and fixed-capital flat-at-UTC-boundary reconstruction.
+  Overnight exact marks and durable transfer provenance are still unresolved.
+  Opening controls and buying power now fail closed on baseline reconciliation.
+
+Latest operator-reported fixes:
+1. The actual local baseline halt came from delayed prior-day funding added after
+   the October 12 opening record was locked. Funding state was healthy, but the
+   baseline halt persisted into later activation. Added explicit, confirmed,
+   audited reconciliation for an exact original FLAT opening ledger only. It
+   keeps the original baseline unchanged and uses the maximum of original,
+   corrected and prior effective thresholds: it cannot reset losses or lower
+   the loss threshold. Hash/integrity/overnight conflicts stay blocked. RESET
+   does not clear these checks. The manual UI exposes the repair and cause.
+2. Transient feed invalidation previously emptied all quotes beneath the chart.
+   Last validated/durably recorded quotes now remain visible as stale/display
+   only, keyed by exact market identity, with the feed's reported fault. Cached
+   values cannot authorize orders, marks, stops or liquidation. No relaxed
+   timestamp/sequence rules, synthesized quotes or alternate-venue fallback.
+   A network fault is one possibility; invalid/stale data or clock offsets can
+   also cause reconnects. The disappearing UI alone was not network evidence.
+3. Regression runner now writes explicit start/end times and child exit codes,
+   including a fresh incomplete marker so a crash cannot look like an old PASS.
+   Logs, scratch exports, reports, databases, keys and generated artifacts are
+   excluded from GitHub. Only source/tests/docs/configuration are published.
+
+Next gate advanced, not approved:
+* Reviewed official Lighter funding, fundings/positionFunding API, timestamp and
+  liquidation documentation. Hourly cadence, signed formula and margins are
+  supported. Exact eligibility at an hour boundary, funding/fill ordering,
+  history value units/direction and finality/revision contract are not fully
+  established by the available schema/docs. See docs/LIGHTER_FUNDING_EVIDENCE.md.
+* An isolated 60-second BTC/ETH mainnet read-only sample passed: 100% observed
+  health, 2,036 accepted frames, 255 trade frames, no disconnects/sequence gaps/
+  invalid frames/recording failures, valid rooted replay. This is NOT 24-hour
+  sustained acceptance. Its local clock reports October 12 21:40–21:41 UTC;
+  session date is October 13. Neither date discrepancy nor clock trust is hidden.
+* Added a bounded public funding-history observer with URLs, market metadata,
+  hashes and two timed responses; unchanged samples cannot prove finality.
+* Automation, agent workers, venue order adapters and live signing stay disabled.
+
+Current operating instructions:
+Open this directory as the project workspace. Run bun run build and bun run dev
+to load backend/UI changes. If a delayed-funding halt appears, use Reconcile
+paper baseline, review confirmation, then separately Enable manual paper.
+This never clears emergency, daily-loss, funding or order-recovery halts.
+Reproduce regression: bun run scripts/verify-paper-accounting.ts, followed by
+git diff --check. Read actual logs/exit codes; blank shell output is not evidence.
+No credentials or private keys should be supplied through chat.
+
+Final readable software evidence: the clean regression runner completed at its
+local timestamp 2026-10-12T21:50:53.319Z, after the source/test patches. Typecheck,
+152 unit tests across 18 files (1,094 assertions), production build and all six
+desktop/mobile Edge workflows exited 0. The staged whitespace check exited 0.
+The first new browser test failed on a text locator and its incomplete fixture
+order evidence; both were fixed, and the final complete suite passed. Runner logs
+are explicitly truncated so stale tails cannot masquerade as new failures/PASS.
+The local ledger was also tested on an in-memory copy before runtime repair, and
+an integrity-checked SQLite backup was created under ignored data/backups/.
+The backed-up operator account was then reconciled through the normal local API:
+HTTP 200, baseline preserved, fills preserved, baseline blocked=false, funding
+blocked=false and order recovery reconciled. Manual trading remains paused;
+automation remains unauthorized. The updated server is running on localhost:3000.
+
+Documentation map additions:
+docs/DATA_AND_EXECUTION.md — current venue/feed and manual execution direction
+docs/PAPER_ORDER_LIFECYCLE.md — reservations, cancellation and recovery
+docs/PAPER_PERPETUAL_ACCOUNTING.md — signed accounting/funding/liquidation policy
+docs/LIGHTER_STREAMING.md, docs/LIGHTER_EVIDENCE.md — stream and evidence scope
+docs/LIGHTER_FUNDING_EVIDENCE.md — authoritative claims and unresolved next gate
+docs/AUTOMATION_ROADMAP.md — dependency order and explicitly closed permissions
+
+Earlier dated narrative follows. Its long-only/deferred-work descriptions are
+historical, not the current signed-perpetual model or automation authorization.
 
 1. PURPOSE AND HOW TO READ THIS DOCUMENT
 ----------------------------------------

@@ -1,7 +1,10 @@
-export type Fill = { id: string; account: string; botId: string; symbol: string; side: 'buy' | 'sell'; quantity: number; price: number; fee: number; multiplier: number; time: string; source: 'paper' | 'imported'; reason: string; settlement?: { version: 1; quantityAtoms: string; quoteMicros: string; feeMicros: string } };
+// Settlement v1 is long-only (buy opens, sell reduces). v2 records the position effect
+// explicitly so signed perpetual inventory never has to infer intent from side alone.
+export type Settlement = { version: 1 | 2; quantityAtoms: string; quoteMicros: string; feeMicros: string; leverage?: number; effect?: 'open' | 'reduce'; liquidationFeeMicros?: string };
+export type Fill = { id: string; account: string; botId: string; symbol: string; side: 'buy' | 'sell'; quantity: number; price: number; fee: number; multiplier: number; time: string; source: 'paper' | 'imported'; reason: string; settlement?: Settlement };
 export type Mark = { account: string; symbol: string; price: number; time: string; source: string };
 export type Position = { account: string; botId: string; symbol: string; quantity: number; average: number; multiplier: number; unrealized: number | null; mark: number | null; markTime: string | null };
-export type ClosedTrade = { id: string; account: string; botId: string; symbol: string; time: string; pnl: number; quantity: number; entry: number; exit: number };
+export type ClosedTrade = { id: string; account: string; botId: string; symbol: string; time: string; pnl: number; quantity: number; entry: number; exit: number; side?: 'long' | 'short' };
 export function validateFill(f: Fill) {
   for (const k of ['id', 'account', 'botId', 'symbol', 'reason'] as const) if (typeof f[k] !== 'string' || !f[k].trim() || f[k].length > 180) throw new Error(`Invalid ${k}`);
   if (!['buy', 'sell'].includes(f.side) || !['paper', 'imported'].includes(f.source)) throw new Error('Invalid fill side or source');

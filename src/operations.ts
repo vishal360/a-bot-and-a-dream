@@ -4,6 +4,7 @@ import type { Vault } from './vault';
 import { analytics, validateFill, type Fill, type Mark } from './ledger';
 import type { Bot } from './domain';
 import { paperAnalytics } from './paper-ledger';
+import { readPaperEvents } from './paper-funding';
 import { units } from './paper-math';
 export type Connection = { id: string; name: string; provider: 'alpaca-paper' | 'alpaca-live' | 'binance'; botId: string; symbol: string; secret: string; status: string; lastSync: string | null; account: any };
 export const policyDefaults = { capital: 100000, maxOrderNotional: 40000, maxGrossNotional: 90000, dailyLoss: 1000, feeBps: 2, slippageBps: 2, tickSeconds: 3 };
@@ -69,9 +70,9 @@ export class Operations {
   }
   connections(): Connection[] { return this.store.db.query('SELECT payload FROM connections').all().map((r: any) => JSON.parse(r.payload)); }
   putConnection(c: Connection) { this.store.db.query('INSERT OR REPLACE INTO connections VALUES (?,?)').run(c.id, JSON.stringify(c)); }
-  snapshot() {
-    const fills = this.fills(), risk = this.store.get('risk'), marks = this.store.get('marks') as Mark[];
-    const accounts = [...new Set(['paper', 'paper-mainnet', ...fills.map(f => f.account)])].map(account => ({ account, source: account === 'paper-mainnet' ? 'local mainnet-depth paper / long-only 1x / no funding' : account === 'paper' ? 'legacy synthetic-paper (disabled)' : 'imported / history may be incomplete', analytics: account === 'paper-mainnet' ? paperAnalytics(fills.filter(f => f.account === account), marks, this.store.get('paperSession')?.capital ?? 10000) : analytics(fills.filter(f => f.account === account), marks, account === 'paper' ? risk.capital : 0) }));
+  snapshot(marks: Mark[] = this.store.get('marks')) {
+    const fills = this.fills(), risk = this.store.get('risk');
+    const accounts = [...new Set(['paper', 'paper-mainnet', ...fills.map(f => f.account)])].map(account => ({ account, source: account === 'paper-mainnet' ? 'local perpetual paper / delayed funding / approximate liquidation' : account === 'paper' ? 'legacy synthetic-paper (disabled)' : 'imported / history may be incomplete', analytics: account === 'paper-mainnet' ? paperAnalytics(fills.filter(f => f.account === account), marks, this.store.get('paperSession')?.capital ?? 10000, new Date(), readPaperEvents(this.store)) : analytics(fills.filter(f => f.account === account), marks, account === 'paper' ? risk.capital : 0) }));
     return { accounts, fills: fills.slice(-1000).reverse(), feed: this.store.get('feed'), risk, connections: this.connections().map(({ secret, ...c }) => c), heartbeats: this.store.get('heartbeats') || {}, alerts: this.store.get('alerts') || [], ingestionEnabled: true };
   }
   rotateToken() { const token = randomBytes(32).toString('hex'); this.store.set('ingestionHash', new Bun.CryptoHasher('sha256').update(token).digest('hex')); this.store.audit('ROTATE_INGESTION_TOKEN', 'Old ingestion token revoked'); return token; }

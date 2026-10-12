@@ -1,5 +1,14 @@
 # Architecture
 
+## Perpetual paper accounting authority
+
+`paper-ledger.ts` replays immutable legacy fills and signed settlement-v2 fills in
+integer units. `paper-funding.ts` persists hash-checked, delayed hourly history
+events; `paper-margin.ts` evaluates cross-account thresholds against fresh marks.
+`Paper` integrates these with existing durable IOC claims, reservations, matching,
+protection/restart handling and the account view. No venue transactions or agent
+authority are added. See [accounting policies and unresolved evidence](PAPER_PERPETUAL_ACCOUNTING.md).
+
 ## Current implementation
 
 Browser React application → same-origin Bun HTTP API → SQLite state/audit/registry.
@@ -8,6 +17,18 @@ Browser React application → same-origin Bun HTTP API → SQLite state/audit/re
 `src/store.ts`: transactions, bot state, persistent halt, runs and immutable registration.
 `src/server.ts`: loopback API, origin/host boundaries, static build serving and safe restart.
 `src/web/`: terminal UI; backend remains authoritative for actions and risk constraints.
+`src/paper.ts` and `src/paper-orders.ts`: single-flight local-paper IOC executor,
+durable budget/quantity reservations, atomic settlement/release, intent deduplication,
+generation fencing and restart evidence checks. Manual and protection exits share
+this authority; no agent or venue adapter is enabled. See [paper lifecycle](PAPER_ORDER_LIFECYCLE.md).
+`src/lighter-trades.ts` and `src/lighter-evidence.ts`: validated read-only public
+trade records and bounded connection-prefix captures. Pure replay reconstructs
+books/stats/trades without an executor or ledger; see [evidence limits](LIGHTER_EVIDENCE.md).
+
+`src/paper-risk-days.ts` records immutable baseline provenance for the fixed-capital
+local ledger; conflicting evidence latches new exposure off. `src/lighter-acceptance.ts`
+and `scripts/accept-lighter.ts` aggregate bounded read-only runtime/replay evidence in
+an isolated database, never the operator account. See [remaining automation gates](AUTOMATION_ROADMAP.md).
 
 SQLite is appropriate for this single-user local control plane, not the final multi-host ledger. Runs are JSON evidence snapshots. Hashes identify evidence; they are not signatures or tamper-proof attestations. Registry insertion is idempotent by run ID. UI polls state every three seconds; displayed sync time is a control-plane response time, not a market heartbeat.
 

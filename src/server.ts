@@ -8,12 +8,22 @@ import { LighterMarkets } from './lighter';
 import { ExecutionRisk } from './execution-risk';
 import { readiness } from './readiness';
 import { Paper } from './paper';
+import { LighterStream } from './lighter-stream';
+import { replayCapture } from './lighter-evidence';
+import { PaperUpdates } from './paper-updates';
 mkdirSync('data', { recursive: true });
 const store = new Store('data/terminal.sqlite');
 const operations = new Operations(store, new Vault('data/vault.key'));
 const executionRisk = new ExecutionRisk(store);
-const paper = new Paper(store);
-setInterval(() => { void paper.observe().catch(() => {}); }, 10000);
+const feed = new LighterStream(store, { marketStats: true, tradeEvidence: true, onUpdate: () => {
+  updates.request();
+  void paper.monitor().then(() => updates.request()).catch(() => {});
+} });
+const paper = new Paper(store, fetch, feed);
+const updates = new PaperUpdates(() => paper.status());
+feed.start();
+void paper.refreshWatched().catch(() => {});
+setInterval(() => { void paper.refreshWatched().catch(() => {}); }, 1000);
 const markets = new LighterMarkets();
 void markets.refresh();
 setInterval(() => void markets.refresh(), 10000);
@@ -47,7 +57,12 @@ const server = Bun.serve({
           const body = await req.json();
           if (url.pathname === '/api/stats/reset') return json(operations.resetStats(body.confirm));
           if (url.pathname === '/api/paper/session') return json(paper.configure(body));
+          if (url.pathname === '/api/paper/baseline-reconcile') return json(await paper.reconcileBaseline(body));
+          if (url.pathname === '/api/paper/market') return json(await paper.select(body));
+          if (url.pathname === '/api/paper/protection') return json(paper.protect(body));
+          if (url.pathname === '/api/paper/leverage') return json(paper.setLeverage(body));
           if (url.pathname === '/api/paper/mainnet-order') return json(await paper.order(body));
+          if (url.pathname === '/api/paper/cancel') return json(paper.cancel(body));
           if (url.pathname === '/api/risk/allocation') return json(operations.saveAllocation(body));
           if (url.pathname === '/api/connections/save') return json({ id: operations.saveConnection(body) });
           else if (url.pathname === '/api/lighter/save') { operations.saveLighter(body); executionRisk.invalidate(); }
@@ -81,10 +96,29 @@ const server = Bun.serve({
         }
         if (req.method !== 'GET') return json({ error: 'Method not allowed' }, 405);
         if (url.pathname === '/api/state') return json(store.snapshot());
-        if (url.pathname === '/api/readiness') return json(readiness());
+        if (url.pathname === '/api/readiness') return json(readiness(paper.status().riskDays));
         if (url.pathname === '/api/risk/execution') return json(executionRisk.status());
-        if (url.pathname === '/api/operations') return json(operations.snapshot());
+        if (url.pathname === '/api/operations') return json(operations.snapshot(paper.currentMarks()));
         if (url.pathname === '/api/paper/session') return json(paper.status());
+        if (url.pathname === '/api/paper/risk-days') return json(paper.status().riskDays);
+        if (url.pathname === '/api/paper/events') {
+          const requestOrigin = req.headers.get('origin'), site = req.headers.get('sec-fetch-site');
+          if ((requestOrigin && ![origin, `http://localhost:${port}`].includes(requestOrigin)) || (site && !['same-origin', 'none'].includes(site))) return json({ error: 'Same-origin paper updates required' }, 403);
+          return updates.response(headers);
+        }
+        if (url.pathname === '/api/feeds/lighter') return json(feed.status());
+        if (url.pathname === '/api/feeds/lighter/trades') {
+          const marketId = url.searchParams.get('marketId');
+          if (!marketId || !/^\d{1,10}$/.test(marketId)) throw new Error('Valid marketId required');
+          return json({ source: 'public evidence only', continuity: 'unproven', trades: feed.evidence!.recentTrades(Number(marketId)) });
+        }
+        if (url.pathname === '/api/feeds/lighter/captures') return json(feed.evidence!.status());
+        if (['/api/feeds/lighter/capture', '/api/feeds/lighter/replay'].includes(url.pathname)) {
+          const id = url.searchParams.get('id') ?? '';
+          if (!/^[a-f0-9-]{36}$/.test(id)) throw new Error('Valid capture ID required');
+          const capture = feed.evidence!.export(id);
+          return json(url.pathname.endsWith('/replay') ? replayCapture(capture) : capture);
+        }
         if (url.pathname === '/api/risk/allocation') return json(operations.allocationPolicy());
         if (url.pathname === '/api/risk/allocation/preview') return json(operations.allocationPreview());
         if (url.pathname === '/api/stats/archives') return json(operations.archives());

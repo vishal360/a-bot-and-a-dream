@@ -6,3 +6,5 @@ data/
 coverage/
 test-results/
 playwright-report/
+resume-verified-results.json
+scratch-*

@@ -1,16 +1,51 @@
 # Revised direction: local paper trading from mainnet data
 
 No venue signer, private key or testnet trading is needed for this direction.
-Current state: an interim manual BTC, long-only, unleveraged local IOC simulator
-uses mainnet REST depth. Matching and monetary reporting use integer units. It is
-not perpetual accounting or validated continuous market data. Existing synthetic
+Current state: a multi-market, signed long/short, margin-backed local IOC simulator
+uses validated mainnet WebSocket depth and market stats. Matching and monetary
+reporting use integer units. History-derived funding and approximate liquidation are
+implemented, but not certified venue-equivalent perpetual accounting. Existing synthetic
 production execution stays disabled. See ASSESSMENT.md for current limitations.
+Market/limit IOC and locally monitored position-level stops/targets are available;
+see DATA_AND_EXECUTION.md for exact semantics and remaining work.
+Sequenced order-book and market_stats ingestion are the sole paper authority; see
+LIGHTER_STREAMING.md. Missing/stale depth or stats blocks fills, with no REST fallback.
+Marks, not bid/mid/index/last trade, value positions and trigger local protection.
+Browser updates use bounded SSE; reconnecting browsers cannot authorize new exposure.
+Manual/protection IOC orders share durable budget/quantity reservations and atomic
+terminal settlement. Restart fences old workers, reconciles local fill evidence and
+blocks exposure on uncertainty. See [order lifecycle and recovery](PAPER_ORDER_LIFECYCLE.md).
+Dedicated public trade recording and bounded snapshot-rooted replay prefixes add
+[read-only evidence tooling](LIGHTER_EVIDENCE.md); coverage and cross-channel event
+continuity remain unproven, with no change to matching or promotion authority.
 
-Repeated REST liquidity is not treated as replenished: simulated consumption is
+Repeated public liquidity (even a new nonce) is not treated as replenished: consumption is
 persisted by market/side/price across refresh and restart. This intentionally can
 underfill or reject orders until verified sequenced replenishment is implemented.
 Unreferenced depth observations have a rolling 1,000-record limit; executed-order
 evidence is retained. UTC loss checks run on observation and atomically on fill.
+
+## Bounded leverage model
+
+Leverage defaults to 1× per market. `POST /api/paper/leverage` accepts whole numbers
+up to `min(20, floor(10000 / min_initial_margin_fraction))`; missing/invalid venue
+margin metadata allows only 1×. Changes are blocked during pending IOC matching or
+while that market has an open position. The saved setting is used by the ticket.
+Orders independently validate leverage, precision, minimums, activation, available
+cash, shared allocation, gross exposure and per-order caps. Venue metadata is
+refreshed at most once per minute; exposure increases require it within two minutes.
+
+Entry deducts initial margin (quote/leverage, rounded up to a micro-dollar) plus fees.
+Exit releases proportional margin and realizes the unscaled price P&L minus fees.
+Equity is free cash + reserved margin + mark-to-market P&L, never gross asset value.
+All position margins share one allocation budget; leverage does not multiply risk caps.
+Legacy fills remain 1× and are not rewritten. Halted/paused reductions remain allowed
+when fresh data is available. Gap losses may exceed margin and produce negative equity;
+funding and liquidation also debit collateral. Shorts reserve collateral, never credit
+sale proceeds. Reverse by closing first, then opening the opposite side. Funding
+history is reconciled after a one-hour delay; liquidation is a depth-constrained IOC
+approximation with a disclosed 1% notional surcharge, not venue LLP/ADL. No venue
+submission occurs. See [exact policy and unresolved evidence](PAPER_PERPETUAL_ACCOUNTING.md).
 
 ## Data choice
 

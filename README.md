@@ -1,10 +1,42 @@
 # Current paper simulation status
 
-Manual BTC mainnet-depth simulation is now available in Command center and Executions.
-It uses a separate $10,000 simulated account, long-only at 1×, with explicit activation
+Multi-market mainnet-depth simulation is available in the Trading workspace.
+It uses a separate $10,000 simulated account, signed long/short inventory with bounded 1–20× paper leverage, explicit activation
 and aggregate allocation above 0%. It does not place venue orders or run agents.
-This is an interim REST-depth price simulator, not complete perpetual execution.
+Validated, durably recorded Lighter WebSocket depth and market stats are authoritative;
+there is no REST execution/valuation fallback. This is not complete perpetual execution.
+The ticket includes market and limit IOC, quick reductions, position-level P&L,
+and locally monitored stop-loss/take-profit. Limit IOC is not a resting limit;
+protection checks run on stream updates and a one-second watchdog while enabled and cannot
+guarantee a stop price or operate through server downtime. Restart pauses them.
+See [data/venue recommendation and manual-control semantics](docs/DATA_AND_EXECUTION.md).
 See [assessment, limits and required inputs](docs/ASSESSMENT.md).
+The backend runs a [sequenced read-only Lighter public feed](docs/LIGHTER_STREAMING.md)
+with snapshot recovery, bounded durable recording and health/latency telemetry at
+`/api/feeds/lighter`. Browser account updates use bounded SSE at `/api/paper/events`,
+not periodic account polling. Leverage is capped by venue initial-margin metadata and
+20×; history-derived hourly funding is reconciled after a one-hour delay. Margin
+thresholds and approximate depth-IOC liquidation are modeled, not venue LLP/ADL.
+Funding timestamp/eligibility semantics remain unverified; see
+[perpetual accounting policies and evidence](docs/PAPER_PERPETUAL_ACCOUNTING.md).
+Manual and protection orders now share durable pending reservations, atomic terminal
+settlement/release, local pre-settlement cancellation and fail-closed restart reconciliation.
+See [paper order lifecycle and recovery](docs/PAPER_ORDER_LIFECYCLE.md). This does not
+enable agents or connect the live execution-risk adapter.
+The read-only socket also records validated public trades and bounded snapshot-rooted
+replay prefixes. See [trade/replay evidence and inspection routes](docs/LIGHTER_EVIDENCE.md).
+Coverage remains unproven; replay cannot submit orders or certify a strategy.
+Baseline provenance and a read-only mainnet acceptance runner are now available.
+See the [current automation roadmap and remaining gates](docs/AUTOMATION_ROADMAP.md).
+Autonomous orders and real-money execution remain disabled.
+
+If manual activation reports **Paper baseline reconciliation required**, use the
+workspace's confirmed **Reconcile paper baseline** action, then enable manual paper
+separately. It verifies a delayed-funding flat opening ledger without rewriting the
+locked baseline or lowering the loss threshold; integrity/overnight conflicts stay
+blocked. Transient feed faults now retain last validated quotes as **stale / display
+only**, with a reported cause. Cached values never authorize fills or valuation.
+See the [funding evidence gate](docs/LIGHTER_FUNDING_EVIDENCE.md).
 
 # A Bot and a Dream
 

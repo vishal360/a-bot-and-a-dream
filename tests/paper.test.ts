@@ -55,7 +55,7 @@ test('paper IOC persists depth-based partial fills, deduplicates and permits hal
     expect(s.get('paperLiquidityUnreconciled')).toBeNull();
     s.set('halted', false); upgraded.configure({ enabled: true });
     const reused = await upgraded.order({ id: 'reuse-depth-0001', side: 'buy', quantity: .01 });
-    expect(reused.status).toBe('rejected'); expect(reused.error).toContain('unused REST liquidity');
+    expect(reused.status).toBe('rejected'); expect(reused.error).toContain('unused Lighter liquidity');
     expect(restarted.summary().fillCount).toBe(2);
   } finally { s.db.close(); }
 });
@@ -93,7 +93,7 @@ test('paper risk rejects depth cost exceeding the order limit even when best quo
   } finally { s.db.close(); }
 });
 
-test('pending claim is shared across matcher instances and recovery scans beyond display limit', async () => {
+test('latest restart generation owns the pending claim and recovery scans beyond display limit', async () => {
   const s = new Store(':memory:'); new Operations(s, {} as any); new ExecutionRisk(s);
   let release!: () => void;
   const gate = new Promise<void>(resolve => release = resolve);
@@ -106,9 +106,9 @@ test('pending claim is shared across matcher instances and recovery scans beyond
   const a = new Paper(s, mock), b = new Paper(s, mock);
   try {
     s.set('allocationPct', 100); s.set('paperSession', { ...s.get('paperSession'), latencyMs: 0 }); a.configure({ enabled: true });
-    const first = a.order({ id: 'concurrent-first', side: 'buy', quantity: .001 });
-    const second = await b.order({ id: 'concurrent-second', side: 'buy', quantity: .001 });
-    expect(second.status).toBe('rejected'); expect(second.error).toContain('pending order');
+    const first = b.order({ id: 'concurrent-first', side: 'buy', quantity: .001 });
+    const second = await a.order({ id: 'concurrent-second', side: 'buy', quantity: .001 });
+    expect(second.status).toBe('rejected'); expect(second.error).toContain('superseded');
     release(); expect((await first).status).toBe('filled'); expect(a.summary().fillCount).toBe(1);
     for (let i = 0; i < 125; i++) s.db.query('INSERT INTO paper_orders VALUES (?,?)').run(`recovery-${i}`, JSON.stringify({ id: `recovery-${i}`, status: 'pending' }));
     new Paper(s, mock);

@@ -2,6 +2,35 @@
 
 ## Current assessment
 
+Current follow-on: [automation roadmap](AUTOMATION_ROADMAP.md) adds fixed-capital
+paper risk-day provenance and bounded read-only mainnet acceptance tooling. Flat
+UTC boundaries are reconstructable; overnight marks, complete perpetual accounting,
+strategy validation and autonomous order authority remain incomplete. A short
+mainnet attempt on 2026-10-12 failed closed on future publication timestamps; it is
+not sustained acceptance and no timestamp rule was weakened.
+
+Update: the operator reports the earlier manual workflow accepted. The subsequent
+multi-market/manual-control increment and current limitations are documented in
+[data and execution direction](DATA_AND_EXECUTION.md). Earlier BTC-only and
+no-stops descriptions below describe the prior increment, not the current ticket.
+Readiness gates and agent/live-execution restrictions remain unchanged.
+Validated WebSocket depth and market stats now own manual paper execution,
+valuation and protection checks. Bounded paper leverage and SSE account push are
+implemented; see [stream health, recording and remaining gates](LIGHTER_STREAMING.md).
+Prior-increment REST/1× descriptions below are historical. The subsequent
+[perpetual accounting increment](PAPER_PERPETUAL_ACCOUNTING.md) adds signed inventory,
+delayed history-derived funding and approximate liquidation. Verified funding
+timestamp ordering, venue LLP/ADL replication and sustained operational validation
+remain incomplete; this is not a certification of exchange-equivalent accounting.
+The subsequent [paper IOC lifecycle increment](PAPER_ORDER_LIFECYCLE.md) connects
+manual/protection orders to durable budget reservations and atomic settlement/release,
+adds local cancellation, and checks fill evidence on restart with generation fencing.
+Descriptions below of disconnected paper reservations are historical. Venue-risk
+reconciliation, verified midnight baselines and agent authority remain incomplete.
+The subsequent [trade/replay evidence increment](LIGHTER_EVIDENCE.md) adds dedicated
+public trade recording and snapshot-rooted bounded replay captures. Complete
+historical/trade continuity and sustained validation are still not established.
+
 Live read-only feed check on 2026-10-09 succeeded: BTC market 1, perpetual metadata,
 5 size decimals, minimum base 0.00007 BTC and minimum quote $10. The observation
 reported bid 82456.4 / ask 82459.3. This was a connectivity check, not a paper or venue
@@ -9,7 +38,7 @@ order, and is not a promise that later observations will remain available.
 
 Overall: 5/10 as a trading-system prototype, not production approval. The control plane,
 research ledger, credential vault and safety boundaries are useful. Automated trading,
-continuous validated depth and complete perpetual accounting are not complete.
+complete perpetual accounting and sustained feed validation are not complete.
 
 ## Available now: interim manual simulation
 
