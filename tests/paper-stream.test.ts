@@ -49,7 +49,7 @@ test('display retains validated quotes through disconnects but never restores ex
   try {
     f.seed();
     const quotes = { bid: 100, ask: 101, mark: 100, index: 99, last: 98, fundingRate: -.001, estimatedFundingRate: .002 };
-    expect(f.paper.status().feed).toMatchObject({ ...quotes, displayOnly: false });
+    expect(f.paper.status().feed).toMatchObject({ ...quotes, displayOnly: false, reason: null });
     f.sockets[0].onclose?.call(f.sockets[0] as any, {} as CloseEvent);
     expect(f.stream.read(1)).toBeNull();
     expect(f.paper.status().feed).toMatchObject({ ...quotes, status: 'disconnected', displayOnly: true, reason: 'WebSocket disconnected' });

@@ -104,7 +104,7 @@ export class Paper {
       bid: d?.bid ?? null, ask: d?.ask ?? null, mark: d?.stats?.mark ?? null, index: d?.stats?.index ?? null, last: d?.stats?.last ?? null,
       fundingRate: d?.stats?.fundingRate ?? null, estimatedFundingRate: d?.stats?.estimatedFundingRate ?? null,
       ageMs: d?.ageMs ?? null, statsAgeMs: d?.statsAgeMs ?? null, markTime: d?.stats?.receivedAt ?? null,
-      displayOnly: d?.displayOnly ?? true, reason: d?.reason ?? 'Market metadata required', state: d?.state ?? 'waiting for markets' };
+      displayOnly: d?.displayOnly ?? true, reason: d ? d.reason : 'Market metadata required', state: d?.state ?? 'waiting for markets' };
   }
   private portfolio(balance: ReturnType<typeof paperBalance>, fresh = true) {
     let exposure = 0n, unrealized = 0n;

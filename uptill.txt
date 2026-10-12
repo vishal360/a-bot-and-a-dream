@@ -87,6 +87,10 @@ The backed-up operator account was then reconciled through the normal local API:
 HTTP 200, baseline preserved, fills preserved, baseline blocked=false, funding
 blocked=false and order recovery reconciled. Manual trading remains paused;
 automation remains unauthorized. The updated server is running on localhost:3000.
+Published the accumulated implementation as 8a4e190 on origin/main. A final runtime
+inspection found a healthy-feed reason-label fallback (null was mistaken for missing
+metadata); corrected it and added a regression assertion. Typecheck and all 11 stream
+tests passed for this display-only follow-up; order/risk behavior is unchanged.
 
 Documentation map additions:
 docs/DATA_AND_EXECUTION.md — current venue/feed and manual execution direction
