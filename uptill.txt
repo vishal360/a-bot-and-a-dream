@@ -1,6 +1,58 @@
 A BOT AND A DREAM — PROJECT HISTORY AND HANDOVER
 ================================================
-Updated: 2026-10-13 (current update below; earlier history retained)
+Updated: 2026-10-27 (current update below; earlier history retained)
+
+CURRENT HANDOVER - OCTOBER 27 UPDATE (fleet paper automation; supersedes the
+October 13 backlog order below)
+--------------------------------------------------------------------
+The bot fleet shipped end to end this session, migrating the project from Cline
+to ZCode without changing the project directory:
+
+* Strategy registry (src/strategies/): deterministic direction proposals with
+  frozen SHA-256 artifact hashes; built-ins breakout-v1, mean-reversion-v1 and
+  funding-carry-v1. Strategies never size orders.
+* FleetManager (src/fleet.ts): one-second per-bot cycles. The runner sizes each
+  proposal inside per-bot caps (notional/order, open notional, orders/hour,
+  cooldown, daily loss stop) and submits market IOC through Paper.botOrder() -
+  the same reservations, risk limits and halts as manual orders. Automation
+  authorization (ENABLE PAPER AUTOMATION) is session-only and cleared on
+  restart; bots start paused. Fill attribution now flows through the ledger:
+  paperBalance accepts fleet-* botIds and paperAnalytics groups per-bot closed
+  legs (closer-of-closed-leg; open P&L and funding stay account-level).
+* FeedHealthGuard (src/feed-health.ts): fail-closed verdict for exposure
+  increases - continuous-healthy dwell (60s default), rolling 99% healthy
+  fraction (1h), counter-regression/recording-failure integrity latch.
+  Closes are never guard-blocked.
+* DecisionJournal (src/journal.ts): bounded 5k-row log of lifecycle events,
+  proposals, submissions, outcomes, guard transitions and skips with inputs
+  and risk checks. GET /api/fleet/journal.
+* Replay backtester (src/backtest-replay.ts): no-look-ahead replay of recorded
+  capture prefixes (signal fills at next book top-of-book) saved into the
+  experiments registry. POST /api/fleet/backtest.
+* Fleet dashboard (Bot fleet workspace): KPIs, bot table with start/pause/
+  delete, live feed-health guard panel, decision journal with per-decision
+  risk checks, capture replay panel. docs/FLEET.md documents semantics and
+  the attribution policy honestly.
+
+Verification this session: 252 unit tests across 31 files (0 failures; was
+226 before the increment), tsc clean, production build clean, and an isolated
+live-server smoke exercised create/enable/start/tick/journal/audit end to end.
+Housekeeping: Cline scratch files (list-cloud*.mjs, _*.txt console dumps)
+deleted; the acceptance clock evaluator was restored to strict fail-closed
+(negative root delay/dispersion rejected; the loosened 8.5s post-sync
+dispersion tolerance removed) matching its tests and the declared 2s policy.
+
+The October 26 24h observation FAILED and is non-acceptance: healthy 97.64%
+< 99%, longest unhealthy interval 222s > 30s policy, feed-clock drift 2.4s >
+2s, 456 disconnects against a 216 budget - with zero sequence gaps and zero
+recording failures. Diagnosis: the host (Windows desktop, consumer network),
+not the pipeline. Next 24h run belongs on a small cloud VM with a disciplined
+clock. Paper work does not depend on it; live trading still does.
+
+Operating notes: bun run check remains the gate. Automation starts DISABLED;
+enable it per session from the Bot fleet workspace. Real-money execution
+remains a separate, still-locked gate.
+
 Repository: https://github.com/vishal360/a-bot-and-a-dream
 Project directory on the original machine:
 C:\Users\Awperation\.cline\data\workspaces\chat\trading-terminal

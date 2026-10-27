@@ -93,7 +93,8 @@ export function paperBalance(fills: Fill[], capital: number, events: LedgerEvent
     if (typeof f.id !== 'string' || !f.id || ids.has(f.id)) throw new Error('Invalid or duplicate paper fill ID');
     ids.add(f.id);
     if (!Number.isFinite(Date.parse(f.time))) throw new Error('Invalid paper timestamp');
-    if (f.account !== 'paper-mainnet' || !/^[A-Za-z0-9._/-]{1,80}-USD$/.test(f.symbol) || f.botId !== 'orion' || f.multiplier !== 1 || !['buy', 'sell'].includes(f.side)) throw new Error('Unsupported paper inventory');
+    if (f.account !== 'paper-mainnet' || !/^[A-Za-z0-9._/-]{1,80}-USD$/.test(f.symbol) ||
+        (f.botId !== 'orion' && !/^fleet-[a-z0-9-]{3,40}$/.test(f.botId)) || f.multiplier !== 1 || !['buy', 'sell'].includes(f.side)) throw new Error('Unsupported paper inventory');
     const p = inventory.get(f.symbol) ?? { quantity: 0n, basis: 0n, entryFees: 0n, margin: 0n, leverage: 1, funding: 0n };
     inventory.set(f.symbol, p);
     const q = units(f.quantity, 8);
@@ -194,6 +195,22 @@ export function paperAnalytics(fills: Fill[], marks: Mark[], capital: number, no
     return quantity ? dollars(quote) / (Number(quantity) / 1e8) : null;
   };
   const margin = [...b.inventory.values()].reduce((sum, p) => sum + p.margin, 0n);
+  // Per-bot attribution: closed legs belong to the bot that closed them; fees to the fill's bot.
+  // Mixed manual/bot positions share one average position, so open P&L is not attributable.
+  const botIds = [...new Set(fills.map(f => f.botId))].sort();
+  const botFees = new Map<string, bigint>();
+  for (const f of fills) {
+    const fee = f.settlement ? BigInt(f.settlement.feeMicros) : units(f.fee.toFixed(6), 6);
+    botFees.set(f.botId, (botFees.get(f.botId) ?? 0n) + fee);
+  }
+  const bots = botIds.map(botId => {
+    const closed = b.trades.filter(t => t.botId === botId), micros = b.tradeMicros.filter((_, i) => b.trades[i].botId === botId);
+    const wins = micros.filter(n => n > 0n).length;
+    const botFills = fills.filter(f => f.botId === botId);
+    return { botId, realized: dollars(micros.reduce((s, n) => s + n, 0n)), fees: dollars(botFees.get(botId) ?? 0n),
+      trades: closed.length, winRate: closed.length ? wins / closed.length : 0, unrealized: null as number | null, fills: botFills.length,
+      volume: botFills.reduce((s, f) => s + (f.settlement ? Number(f.settlement.quoteMicros) : Number(units((f.quantity * f.price).toFixed(6), 6))) / 1e6, 0) };
+  });
   return { capital, cash: dollars(b.cash), marginUsed: dollars(margin), gross: dollars(b.gross), fees: dollars(b.fees), funding: dollars(b.funding), transfers: dollars(b.transfers), liquidationFees: dollars(b.liquidationFees), realized: dollars(b.realized), unrealized,
     averageBuy: b.inventory.size > 1 ? null : executionAverage('buy'), averageSell: b.inventory.size > 1 ? null : executionAverage('sell'),
     equity: missingMarks ? null : dollars(b.cash + margin + value), positions, trades: b.trades, fillCount: fills.length,

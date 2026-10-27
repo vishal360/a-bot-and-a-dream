@@ -11,6 +11,12 @@ import { Paper } from './paper';
 import { LighterStream } from './lighter-stream';
 import { replayCapture } from './lighter-evidence';
 import { PaperUpdates } from './paper-updates';
+import { DecisionJournal } from './journal';
+import { FeedHealthGuard } from './feed-health';
+import { StrategyRegistry } from './strategies/registry';
+import { builtinStrategies } from './strategies/builtin';
+import { FleetManager } from './fleet';
+import { framesFromCapture, replayStrategy } from './backtest-replay';
 mkdirSync('data', { recursive: true });
 const store = new Store('data/terminal.sqlite');
 const operations = new Operations(store, new Vault('data/vault.key'));
@@ -21,6 +27,12 @@ const feed = new LighterStream(store, { marketStats: true, tradeEvidence: true, 
 } });
 const paper = new Paper(store, fetch, feed);
 const updates = new PaperUpdates(() => paper.status());
+const journal = new DecisionJournal(store);
+const strategyRegistry = new StrategyRegistry();
+for (const strategy of builtinStrategies) strategyRegistry.register(strategy);
+const feedGuard = new FeedHealthGuard(store);
+const fleet = new FleetManager(store, paper, feed, journal, strategyRegistry, feedGuard, { onWatchChange: () => { void paper.refreshWatched().catch(() => {}); } });
+fleet.start();
 feed.start();
 void paper.refreshWatched().catch(() => {});
 setInterval(() => { void paper.refreshWatched().catch(() => {}); }, 1000);
@@ -91,6 +103,25 @@ const server = Bun.serve({
             const source = body.bars ? 'user-uploaded / unverified' : 'synthetic';
             const result = backtest(bars, config, source); return json({ id: store.saveRun(result), result });
           } else if (url.pathname === '/api/promote') return json({ hash: store.promote(body.id) });
+          else if (url.pathname === '/api/fleet/enable') return json(fleet.enable(body));
+          else if (url.pathname === '/api/fleet/disable') return json(fleet.disable());
+          else if (url.pathname === '/api/fleet/create') return json(fleet.create(body));
+          else if (url.pathname === '/api/fleet/update') return json(fleet.update(body));
+          else if (url.pathname === '/api/fleet/delete') return json(fleet.delete(body));
+          else if (url.pathname === '/api/fleet/start') return json(fleet.startBot(body));
+          else if (url.pathname === '/api/fleet/pause') return json(fleet.pauseBot(body));
+          else if (url.pathname === '/api/fleet/backtest') {
+            const captureId = typeof body.captureId === 'string' ? body.captureId : null;
+            if (!/^[a-f0-9-]{36}$/.test(captureId ?? '')) throw new Error('Valid capture ID required');
+            const capture = feed.evidence!.export(captureId!);
+            const market = capture.manifest.markets.find((m: any) => m.symbol === body.symbol);
+            if (!market) throw new Error('Capture does not include that market');
+            const result = replayStrategy({ registry: strategyRegistry, strategyId: body.strategyId, params: body.params ?? {},
+              market, frames: framesFromCapture(capture), staleMs: capture.manifest.staleMs, marketStats: capture.manifest.marketStats,
+              capital: body.capital ?? 10000, feeBps: Number.isInteger(body.feeBps) ? body.feeBps : 2,
+              leverage: body.leverage ?? 1, notionalPerOrderUsd: body.notionalPerOrderUsd ?? Math.min(1000, (body.capital ?? 10000) - 1), captureId });
+            return json({ id: store.saveRun({ ...result, source: 'recorded-feed-replay' } as any), result });
+          }
           else return json({ error: 'Unknown endpoint' }, 404);
           return json({ ok: true });
         }
@@ -107,6 +138,8 @@ const server = Bun.serve({
           return updates.response(headers);
         }
         if (url.pathname === '/api/feeds/lighter') return json(feed.status());
+        if (url.pathname === '/api/fleet') return json(fleet.status());
+        if (url.pathname === '/api/fleet/journal') return json({ entries: journal.list({ botId: url.searchParams.get('botId') ?? undefined, limit: Number(url.searchParams.get('limit') ?? 200) }) });
         if (url.pathname === '/api/feeds/lighter/trades') {
           const marketId = url.searchParams.get('marketId');
           if (!marketId || !/^\d{1,10}$/.test(marketId)) throw new Error('Valid marketId required');

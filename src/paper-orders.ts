@@ -10,7 +10,7 @@ export type PaperReservation = {
 };
 export type PaperIntent = {
   symbol: string; side: 'buy' | 'sell'; quantity: number; type: 'market' | 'limit';
-  limitPrice: number | null; leverage: number | null; source: 'manual' | 'protection' | 'liquidation'; reason: string | null;
+  limitPrice: number | null; leverage: number | null; source: 'manual' | 'protection' | 'liquidation' | 'bot'; reason: string | null; botId: string | null;
 };
 
 /** Local-paper authority only. No venue acknowledgements or live-risk permissions. */
@@ -44,7 +44,7 @@ export class PaperOrders {
     if (!old) return null;
     const previous = old.intent ?? { symbol: old.symbol ?? 'BTC', side: old.side, quantity: old.quantity,
       type: old.type ?? 'market', limitPrice: old.limitPrice ?? null, leverage: intent.leverage === null ? null : old.leverage ?? 1,
-      source: 'manual', reason: null };
+      source: 'manual', reason: null, botId: null };
     if ((Object.keys(intent) as (keyof PaperIntent)[]).some(key => previous[key] !== intent[key])) throw new Error('Conflicting order ID');
     return old; // Pending and terminal duplicates are reads, never execution permission.
   }

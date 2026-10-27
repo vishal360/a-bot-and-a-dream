@@ -1,7 +1,7 @@
 export type Bar = { time: string; open: number; high: number; low: number; close: number };
 export type Bot = { id: string; name: string; asset: 'futures' | 'crypto'; symbol: string; status: 'running' | 'paused' | 'halted'; strategy: string; createdAt: string; description: string };
 export type Config = { lookback: number; stopPct: number; riskPct: number; feeBps: number; slippageBps: number; capital: number; asset: 'futures' | 'crypto' };
-export type Trade = { entryTime: string; exitTime: string; side: 'long'; entry: number; exit: number; quantity: number; pnl: number; reason: string };
+export type Trade = { entryTime: string; exitTime: string; side: 'long' | 'short'; entry: number; exit: number; quantity: number; pnl: number; reason: string };
 export type Result = { config: Config; trades: Trade[]; equity: number[]; netPnl: number; maxDrawdown: number; winRate: number; profitFactor: number | null; source: string; warnings: string[] };
 export const defaultConfig: Config = { lookback: 20, stopPct: 0.01, riskPct: 0.005, feeBps: 2, slippageBps: 2, capital: 10000, asset: 'futures' };
 

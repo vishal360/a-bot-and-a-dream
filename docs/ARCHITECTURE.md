@@ -30,6 +30,8 @@ local ledger; conflicting evidence latches new exposure off. `src/lighter-accept
 and `scripts/accept-lighter.ts` aggregate bounded read-only runtime/replay evidence in
 an isolated database, never the operator account. See [remaining automation gates](AUTOMATION_ROADMAP.md).
 
+`src/fleet.ts` runs multiple named bots on the shared paper authority: strategies propose directions, the runner sizes and journals them, and every order passes the same reservations, risk limits and halts as manual orders. Automation authorization is session-only; the feed-health guard blocks exposure increases unless the validated feed is continuously healthy. See [fleet](FLEET.md).
+
 SQLite is appropriate for this single-user local control plane, not the final multi-host ledger. Runs are JSON evidence snapshots. Hashes identify evidence; they are not signatures or tamper-proof attestations. Registry insertion is idempotent by run ID. UI polls state every three seconds; displayed sync time is a control-plane response time, not a market heartbeat.
 
 ## Target execution protocol

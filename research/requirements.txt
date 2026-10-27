@@ -1,0 +1,4 @@
+# Research lane dependencies. Pinned majors; install into research/.venv only.
+arch>=7,<9
+numpy>=1.26
+scipy>=1.11

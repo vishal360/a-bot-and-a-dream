@@ -8,3 +8,6 @@ test-results/
 playwright-report/
 resume-verified-results.json
 scratch-*
+research/.venv/
+research/__pycache__/
+research/verdicts/

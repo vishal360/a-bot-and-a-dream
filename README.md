@@ -30,6 +30,25 @@ Baseline provenance and a read-only mainnet acceptance runner are now available.
 See the [current automation roadmap and remaining gates](docs/AUTOMATION_ROADMAP.md).
 Autonomous orders and real-money execution remain disabled.
 
+The [read-only automation preflight and delivery status](docs/AUTOMATION_PREFLIGHT.md)
+explains the older observer PID, host-clock repair, source/report integrity checks
+and remaining strategy/live gates. New acceptance runs fail closed before network
+access without recent supported Windows Time synchronization. Inspect a completed
+run with `bun run scripts/inspect-lighter-acceptance.ts <run-uuid>`; a heartbeat alone
+never proves acceptance or enables trading.
+
+The [next read-only foundation gate](docs/LIGHTER_FOUNDATION_GATE.md) independently
+checks review-bundle hashes/stages and combines separate inspected short/sustained
+observations on current sources. `bun run scripts/lighter-foundation-gate.ts`
+reports missing evidence and clock blockers without starting observers or granting
+trading authority. Strategy/shadow/paper/live promotion remain separate gates.
+
+An isolated [feed recovery drill suite](docs/LIGHTER_FEED_DRILLS.md) is available:
+`bun run scripts/drill-lighter-feed.ts`. It exercises disconnect/resnapshot, clock
+and sequence faults, write refusal, restart/restore and the patched observer using
+fixtures and local WebSocket transport. Passing drills never grants mainnet
+acceptance or order authority; existing observers and operator state stay untouched.
+
 If manual activation reports **Paper baseline reconciliation required**, use the
 workspace's confirmed **Reconcile paper baseline** action, then enable manual paper
 separately. It verifies a delayed-funding flat opening ledger without rewriting the
@@ -37,6 +56,11 @@ locked baseline or lowering the loss threshold; integrity/overnight conflicts st
 blocked. Transient feed faults now retain last validated quotes as **stale / display
 only**, with a reported cause. Cached values never authorize fills or valuation.
 See the [funding evidence gate](docs/LIGHTER_FUNDING_EVIDENCE.md).
+The bounded `bun run scripts/corroborate-lighter-funding.ts` collector captures
+public protocol-pool funding, history, a current snapshot and recent trades with
+source-response hashes. Its arithmetic comparisons are candidate corroboration,
+not a venue units/rounding contract or boundary/finality approval. No credentials
+or operator-account writes are used.
 
 # A Bot and a Dream
 
@@ -68,6 +92,7 @@ under `test-results/`; the HTML report is under `playwright-report/`.
 
 ## Included
 
+- **Bot fleet** (paper automation): multiple named strategy bots proposing through the shared paper executor with per-bot notional/frequency/daily-loss caps, a feed-health guard, session-only automation authorization, a full decision journal and a hedge-fund style fleet dashboard. See [fleet semantics and attribution](docs/FLEET.md).
 - Responsive React interface with ten workspaces, equity/price/drawdown graphs, daily P&L, best/worst trades and runner rankings.
 - Legacy synthetic strategy and risk engine retained for regression tests only; production order/flatten/start routes reject requests.
 - Persistent portfolio allocation preview using current public venue equity; internal shared risk/reservation foundation (not venue-connected).

@@ -1,0 +1,76 @@
+/* Fleet dashboard — hedge-fund desk aesthetics on the shared terminal design system. */
+
+/* ── KPI cards: dark glass with accent top edge and hover glow ── */
+.fleet-kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:22px}
+.fleet-kpis .metric{
+  position:relative;overflow:hidden;
+  border:1px solid #223146;border-radius:10px;
+  background:linear-gradient(155deg,#122031 0%,#0c1420 55%,#0b111b 100%);
+  padding:20px 20px 16px;transition:transform .18s ease,border-color .18s ease,box-shadow .18s ease;
+}
+.fleet-kpis .metric::before{
+  content:"";position:absolute;inset:0 0 auto 0;height:2px;
+  background:linear-gradient(90deg,transparent,#40e4be 30%,#40e4be70 70%,transparent);
+}
+.fleet-kpis .metric:hover{transform:translateY(-2px);border-color:#2f5a52;box-shadow:0 10px 30px -12px rgba(64,228,190,.25)}
+.fleet-kpis .metric span{font-size:9px;letter-spacing:1.8px;color:#7d90ab}
+.fleet-kpis .metric strong{
+  display:block;font-family:Consolas,monospace;font-weight:400;font-size:30px;
+  font-variant-numeric:tabular-nums;letter-spacing:-.5px;margin:13px 0 8px;
+}
+.fleet-kpis .metric small{font-size:10px;color:#7588a2}
+
+/* P&L coloring gets a soft glow instead of flat color */
+.fleet-kpis .metric strong.green{color:#5bddb8;text-shadow:0 0 18px rgba(91,221,184,.35)}
+.fleet-kpis .metric strong.red{color:#ff8393;text-shadow:0 0 18px rgba(255,131,147,.3)}
+
+/* ── Panels: quieter borders, lift on hover ── */
+.fleet-console .panel{transition:border-color .2s ease,box-shadow .2s ease}
+.fleet-console .panel:hover{border-color:#2d4058}
+
+/* ── Guard strip: live pulse dot ── */
+.fleet-guard{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-top:16px;border-top:1px solid #202c3d;padding-top:16px}
+.fleet-guard .badge{position:relative;padding-left:24px}
+.fleet-guard .badge::before{
+  content:"";position:absolute;left:9px;top:50%;width:7px;height:7px;margin-top:-3.5px;border-radius:50%;
+  background:currentColor;box-shadow:0 0 10px currentColor;animation:fleetPulse 2s ease-in-out infinite;
+}
+@keyframes fleetPulse{0%,100%{opacity:1}50%{opacity:.35}}
+
+/* ── Bot table: breathing rows, status chips ── */
+.fleet-console table th{
+  text-transform:uppercase;font-size:9px;letter-spacing:1.2px;color:#71839c;
+  border-bottom:1px solid #2a3850;padding:12px 10px;
+}
+.fleet-console tbody tr{transition:background .15s ease}
+.fleet-console tbody tr:hover{background:#15223466}
+.fleet-console td strong{color:#dfe9f6;font-weight:600}
+.fleet-console .badge{transition:box-shadow .2s ease}
+.fleet-console .badge.running{box-shadow:0 0 12px rgba(64,228,190,.18)}
+.fleet-console .badge.halted{box-shadow:0 0 12px rgba(255,115,134,.18)}
+
+/* ── Decision chips in the journal ── */
+.fleet-console .badge.green{color:#5bddb8;border-color:#2f6a58;background:rgba(64,228,190,.07)}
+.fleet-console .badge.red{color:#ff8393;border-color:#8c3748;background:rgba(255,115,134,.07)}
+.fleet-console .badge.amber{color:#d7b76e;border-color:#72603a;background:rgba(215,183,110,.07)}
+
+/* ── Risk-check marks ── */
+.fleet-console td small{color:#7588a2;font-size:9px;letter-spacing:.2px}
+.fleet-console td small.green{color:#5bddb8}
+.fleet-console td small.red{color:#ff8393}
+
+/* ── Forms: two-column caps grid with focus glow ── */
+.fleet-grid{display:grid;grid-template-columns:1fr 1fr;gap:22px;align-items:start}
+.fleet-grid .panel{margin-bottom:22px}
+.fleet-caps{display:grid;grid-template-columns:1fr 1fr;gap:0 14px}
+.fleet-caps label{margin:12px 0}
+.fleet-console input:focus,.fleet-console select:focus{border-color:#40e4be;box-shadow:0 0 0 3px rgba(64,228,190,.12)}
+
+/* ── Primary action: gold-green gradient ── */
+.fleet-console .primary{
+  background:linear-gradient(120deg,#3fd8b6,#2ea88c);border-color:#46d4b3;color:#06231d;font-weight:650;
+}
+.fleet-console .primary:hover{background:linear-gradient(120deg,#5feed0,#37bfa0);box-shadow:0 6px 20px -8px rgba(70,212,179,.5)}
+
+@media(max-width:1100px){.fleet-kpis{grid-template-columns:1fr 1fr}.fleet-grid{grid-template-columns:1fr}}
+@media(max-width:700px){.fleet-kpis{grid-template-columns:1fr}.fleet-caps{grid-template-columns:1fr}}
