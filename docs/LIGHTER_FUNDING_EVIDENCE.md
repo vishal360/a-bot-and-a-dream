@@ -5,7 +5,7 @@ authorize autonomous paper orders or live signing.
 
 ## Official source findings
 
-1. [Funding](https://docs.lighter.xyz/perpetual-futures/funding):
+1. [Funding](https://docs.lighter.xyz/trading/funding.md):
    “Funding payments occur at each hour mark.” Positive rates mean longs pay shorts;
    negative rates mean shorts pay longs. The formula is `-position * index * fundingRate`;
    positive payment is credited and negative payment is charged. The `/8` in rate
@@ -53,6 +53,44 @@ were unchanged across the two-second comparison. Evidence is saved locally at
 `data/funding-evidence/a2499ca7-4fbc-4519-b928-624dd8a31ff4/report.json`.
 Eligibility, ordering and finality flags remain false. A two-second unchanged
 comparison does not satisfy any of those unresolved requirements.
+
+## Public-pool corroboration increment
+
+The [publicPoolsMetadata](https://apidocs.lighter.xyz/reference/publicpoolsmetadata.md)
+endpoint allows public discovery without an account filter/authentication. The
+[positionFunding](https://apidocs.lighter.xyz/reference/positionfunding.md) and
+[trades](https://apidocs.lighter.xyz/reference/trades.md) references explicitly
+permit public-pool reads without main/sub-account authorization. The canonical
+funding Markdown source is now `https://docs.lighter.xyz/trading/funding.md`.
+
+From `C:/Users/Awperation/.cline/data/workspaces/chat/trading-terminal`:
+
+```powershell
+bun run scripts/corroborate-lighter-funding.ts
+```
+
+This collector discovers a public protocol pool and unique active BTC/ETH perpetual
+identities, captures at most two 50-row account-funding pages over a 24-hour window,
+two public history responses, a **current** account snapshot and one bounded recent
+trade page. It saves exact response bytes, URLs, local request/receive times and
+SHA-256 hashes, plus official document snapshots, under ignored
+`data/funding-evidence/<uuid>/`. Redirects, malformed/unsafe identities, overlapping
+funding pages and responses larger than 4 MiB fail closed. No account/auth flags,
+credentials, operator database, Paper imports, venue submissions or readiness writes.
+
+The comparison is explicitly a hypothesis: equal timestamp labels, `value` treated
+as quote per base unit, `direction` treated as the paying side, and signed account
+`rate * 100` compared with the signed public rate magnitude. Exact integer arithmetic
+uses a predeclared tolerance of one micro quote unit plus position size times `1e-8`.
+That accommodates public-value precision; it is **not** a venue rounding contract.
+Nonzero discounts remain unmodeled; a missing public hour is not shifted to another
+timestamp. A matching amount does not prove timestamp semantics, boundary eligibility,
+execution ordering, fee-tier conformance, amendment/finality or overnight marks.
+All verification/authorization flags remain false regardless of comparison results.
+
+The account snapshot is not historical boundary evidence. Recent trades may be
+truncated and do not prove complete holdings. Funding IDs are retained, but their
+scope and relation to fill transaction sequences are not inferred.
 
 ## Still required before promotion
 

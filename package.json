@@ -7,9 +7,9 @@
     "dev": "bun run src/server.ts",
     "build": "vite build",
     "start": "bun run src/server.ts",
-    "test": "bun test",
+    "test": "bun test ./tests",
     "typecheck": "tsc --noEmit",
-    "check": "bun run typecheck && bun test && bun run build",
+    "check": "bun run typecheck && bun run test && bun run build",
     "test:e2e": "bun run build && bun node_modules/@playwright/test/cli.js test"
   },
   "dependencies": {
