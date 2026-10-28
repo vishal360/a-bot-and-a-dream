@@ -7,7 +7,10 @@ import { breakoutV1 } from '../src/strategies/builtin';
 import { Store } from '../src/store';
 
 const marketMeta = { symbol: 'BTC', market_id: 0, supported_price_decimals: 2, supported_size_decimals: 4, min_base_amount: 0.001, min_quote_amount: 10 };
-const day = new Date().toISOString().slice(0, 10);
+// Pin the fixture date to the harness's fixed fake clock (wall starts 2026-10-27T10:00:00Z).
+// Deriving it from the real clock made this test pass only while the machine's UTC date
+// was still 2026-10-27; the fleet's daily-loss logic itself was correct.
+const day = '2026-10-27';
 
 function harness(options: { paper?: any; feed?: any; fills?: any[] } = {}) {
   const store = new Store(':memory:');
