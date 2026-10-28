@@ -28,6 +28,11 @@ export class LighterStream {
   private running = false;
   private fatal = false;
   private epoch = '';
+  // Evidence capture identity: starts as the epoch and rolls to <epoch>-r<N> whenever a
+  // capture hits capacity, so recording stays continuous within one connection
+  // (docs/DATA_ENGINE.md). The stream epoch itself remains the connection identity.
+  private captureId: string | null = null;
+  private captureRoll = 0;
   private state = 'stopped';
   private error: string | null = null;
   private nextRetry = 0;
@@ -80,8 +85,17 @@ export class LighterStream {
       this.store.db.query('INSERT INTO lighter_feed_journal (epoch,received_ms,kind,payload) VALUES (?,?,?,?)').run(this.epoch, received.wall, kind, JSON.stringify(payload));
       // IDs are monotonic and never reused: avoid scanning thousands of rows on EVERY tick.
       this.store.db.query('DELETE FROM lighter_feed_journal WHERE id <= (SELECT COALESCE(MAX(id),0)-? FROM lighter_feed_journal)').run(this.retention);
-      if (kind === 'connect') this.evidence?.begin(this.epoch, [...this.books.values()].map(b => b.market), this.staleMs, !!this.options.marketStats, received);
-      if (data) this.evidence?.append(this.epoch, data.raw, received, data.trades);
+      if (kind === 'connect') { this.captureId = this.epoch; this.captureRoll = 0; this.evidence?.begin(this.captureId, [...this.books.values()].map(b => b.market), this.staleMs, !!this.options.marketStats, received); }
+      if (data && this.evidence && this.captureId) {
+        const state = this.evidence.append(this.captureId, data.raw, received, data.trades);
+        if (state === 'limited') {
+          // Capacity ended this capture: begin the successor immediately so recording stays continuous.
+          this.captureRoll += 1;
+          this.captureId = `${this.epoch}-r${this.captureRoll}`;
+          this.evidence.begin(this.captureId, [...this.books.values()].map(b => b.market), this.staleMs, !!this.options.marketStats, received);
+          this.evidence.append(this.captureId, data.raw, received, data.trades);
+        }
+      }
     }).immediate();
     this.recordMs.add(this.clock().mono - start.mono);
   }
@@ -95,9 +109,10 @@ export class LighterStream {
     this.stats.clear(); this.tradeNonces.clear(); this.tradeReceived.clear(); this.revision++;
     if (socket) { socket.onopen = socket.onmessage = socket.onerror = socket.onclose = null; try { socket.close(); } catch {} }
     this.error = reason;
-    if (this.epoch && this.evidence && !this.fatal) {
-      try { this.store.db.transaction(() => this.evidence!.finish(this.epoch, reason, this.clock().wall)).immediate(); }
+    if (this.captureId && this.evidence && !this.fatal) {
+      try { this.store.db.transaction(() => this.evidence!.finish(this.captureId!, reason, this.clock().wall)).immediate(); }
       catch { this.recordingFailed(); return; }
+      this.captureId = null;
     }
     if (retry && this.running && !this.fatal) {
       this.counts.disconnects++; this.state = 'reconnecting';

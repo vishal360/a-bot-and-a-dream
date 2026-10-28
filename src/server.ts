@@ -18,6 +18,7 @@ import { builtinStrategies } from './strategies/builtin';
 import { FleetManager } from './fleet';
 import { framesFromCapture, replayStrategy } from './backtest-replay';
 import { loadPromotionGate } from './promotion';
+import { DataEngine } from './data-engine';
 mkdirSync('data', { recursive: true });
 const store = new Store('data/terminal.sqlite');
 const operations = new Operations(store, new Vault('data/vault.key'));
@@ -29,12 +30,18 @@ const feed = new LighterStream(store, { marketStats: true, tradeEvidence: true, 
 const paper = new Paper(store, fetch, feed);
 const updates = new PaperUpdates(() => paper.status());
 const journal = new DecisionJournal(store);
+// Durable data engine: continuously export terminal captures to data/archive before the
+// evidence ring evicts them (docs/DATA_ENGINE.md). Recording itself keeps rolling via
+// capture roll in lighter-stream.ts, so a capacity-limited capture never ends recording.
+const archive = feed.evidence ? new DataEngine(store, feed.evidence, { root: 'data/archive' }) : null;
+archive?.start();
 const strategyRegistry = new StrategyRegistry();
 for (const strategy of builtinStrategies) strategyRegistry.register(strategy);
 const feedGuard = new FeedHealthGuard(store);
 const promotion = loadPromotionGate('research/promotions.json', 'research/spa_verify.py');
 const fleet = new FleetManager(store, paper, feed, journal, strategyRegistry, feedGuard, { onWatchChange: () => { void paper.refreshWatched().catch(() => {}); } }, undefined, promotion);
 fleet.start();
+archive?.start();
 feed.start();
 void paper.refreshWatched().catch(() => {});
 setInterval(() => { void paper.refreshWatched().catch(() => {}); }, 1000);
@@ -144,6 +151,7 @@ const server = Bun.serve({
         if (url.pathname === '/api/feeds/lighter') return json(feed.status());
         if (url.pathname === '/api/fleet') return json(fleet.status());
         if (url.pathname === '/api/fleet/journal') return json({ entries: journal.list({ botId: url.searchParams.get('botId') ?? undefined, limit: Number(url.searchParams.get('limit') ?? 200) }) });
+        if (url.pathname === '/api/archive') return json(archive ? archive.status() : { enabled: false });
         if (url.pathname === '/api/feeds/lighter/trades') {
           const marketId = url.searchParams.get('marketId');
           if (!marketId || !/^\d{1,10}$/.test(marketId)) throw new Error('Valid marketId required');

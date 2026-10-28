@@ -64,8 +64,10 @@ export class LighterEvidence {
       if (row && row.payload !== JSON.stringify(t)) throw new Error('Conflicting public trade ID');
     }
   }
-  /** Called inside the same immediate transaction as the diagnostic journal. */
-  append(id: string, raw: string, clock: BookClock, trades: PublicTrade[]) {
+  /** Called inside the same immediate transaction as the diagnostic journal. Returns the
+   *  capture state after the append so the stream can roll to a successor capture when
+   *  capacity ends this one ('limited'); appends to non-capturing captures are dropped. */
+  append(id: string, raw: string, clock: BookClock, trades: PublicTrade[]): Manifest['state'] {
     this.checkTrades(trades);
     for (const t of trades) this.store.db.query('INSERT OR IGNORE INTO lighter_public_trades (market_id,trade_id,payload) VALUES (?,?,?)').run(t.marketId, t.id, JSON.stringify(t));
     const m = this.get(id), bytes = Buffer.byteLength(raw, 'utf8');
@@ -79,6 +81,7 @@ export class LighterEvidence {
       }
     }
     if (trades.length) this.trimTrades();
+    return m.state === 'capturing' ? this.get(id).state : m.state;
   }
   recentTrades(marketId: number, limit = 100): PublicTrade[] {
     if (!Number.isSafeInteger(marketId) || marketId < 0 || !Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('Invalid trade query');
