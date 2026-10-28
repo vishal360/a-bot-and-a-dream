@@ -5,6 +5,7 @@ import type { StrategyRegistry } from './strategies/registry';
 import { validateParams, midPrice, type StrategyContext, type StrategyProposal } from './strategies/types';
 import type { PublicTrade } from './lighter-trades';
 import { leverageLimit } from './paper';
+import type { PromotionGate } from './promotion';
 
 type PaperStatus = ReturnType<import('./paper').Paper['status']>;
 export type PaperSubmitResult = { id: string; status: string; filled?: number; price?: number; error?: string };
@@ -52,7 +53,8 @@ export class FleetManager {
   constructor(private store: Store, private paper: FleetPaper, private feed: FleetFeed,
     private journal: DecisionJournal, private registry: StrategyRegistry, private guard: FeedHealthGuard,
     private hooks: { onWatchChange?: () => void } = {},
-    private clock: { mono: () => number; wall: () => number } = { mono: () => performance.now(), wall: () => Date.now() }) {
+    private clock: { mono: () => number; wall: () => number } = { mono: () => performance.now(), wall: () => Date.now() },
+    private promotion: PromotionGate | null = null) {
     this.bots = store.get('fleet') ?? [];
     for (const bot of this.bots) bot.status = 'paused'; // Restart never resumes a runner automatically.
     // Automation authorization is an operator action per session, never persisted trust.
@@ -155,6 +157,10 @@ export class FleetManager {
       return;
     }
     const strategy = this.registry.get(bot.strategyId);
+    if (this.promotion && !this.promotion.allows(strategy, bot.params)) {
+      return this.skip(bot, 'Strategy config is not promoted by the research gate', snapshot, 30000,
+        [{ check: 'research-promotion', pass: false, detail: this.promotion.describe().mode }]);
+    }
     const quote = this.feed.read(market.market_id);
     if (!quote) return this.skip(bot, 'No validated executable book', snapshot);
     const trades = this.feed.evidence ? this.feed.evidence.recentTrades(market.market_id, 100) : [];
@@ -268,6 +274,7 @@ export class FleetManager {
     if (this.bot(id)) throw new Error(`Bot ${id} already exists`);
     const strategy = this.registry.get(body.strategyId ?? '');
     const params = validateParams(strategy, body.params ?? {});
+    if (this.promotion && !this.promotion.allows(strategy, params)) throw new Error(`Strategy config not promoted by the research gate (${this.promotion.mode}); run scripts/research-promote.ts first`);
     const symbol = body.symbol;
     if (typeof symbol !== 'string' || !SYMBOL.test(symbol)) throw new Error('Invalid market symbol');
     const risk = this.store.get('risk') ?? { maxOrderNotional: 40000 };
@@ -296,8 +303,10 @@ export class FleetManager {
     if (bot.status === 'running') throw new Error('Pause the bot before editing it');
     if (body.params !== undefined || (body.strategyId !== undefined && body.strategyId !== bot.strategyId)) {
       const strategy = this.registry.get(body.strategyId ?? bot.strategyId);
+      const nextParams = validateParams(strategy, body.params ?? bot.params);
+      if (this.promotion && !this.promotion.allows(strategy, nextParams)) throw new Error(`Strategy config not promoted by the research gate (${this.promotion.mode}); run scripts/research-promote.ts first`);
       bot.strategyId = strategy.id;
-      bot.params = validateParams(strategy, body.params ?? bot.params);
+      bot.params = nextParams;
       this.windows.delete(bot.id);
     }
     if (body.symbol !== undefined) {
@@ -384,6 +393,7 @@ export class FleetManager {
       enabled: !!this.store.get('fleetEnabled'),
       guard: this.guard.status(),
       strategies: this.registry.list(),
+      promotion: this.promotion ? this.promotion.describe() : { mode: 'unverified', reasons: ['No research gate installed; strategy configs are not SPA-verified.'] },
       bots: this.bots.map(bot => {
         const a = attribution.get(bot.id);
         const dayKey = new Date().toISOString().slice(0, 10);

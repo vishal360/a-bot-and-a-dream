@@ -28,7 +28,7 @@ export const reviewStageArguments: Readonly<Record<string, readonly string[]>> =
 const rootFiles = ['.dockerignore', '.gitignore', 'Dockerfile', 'README.md', 'bun.lock', 'index.html',
   'package.json', 'tsconfig.json', 'playwright.config.ts', 'vite.config.ts', 'uptill.txt', 'AGENTS.md'];
 const sourceAllowed = (file: string) => rootFiles.includes(file) || helperFiles.includes(file) ||
-  /^(?:src|scripts|tests|e2e|docs|research|\.github\/workflows)\/[A-Za-z0-9_./-]+\.(?:ts|tsx|css|md|ps1|yml|yaml|py|txt|toml)$/.test(file);
+  /^(?:src|scripts|tests|e2e|docs|\.github\/workflows)\/[A-Za-z0-9_./-]+\.(?:ts|tsx|css|md|ps1|yml|yaml|py|txt|toml)$|^research\/[A-Za-z0-9_./-]+\.(?:py|txt|toml|json)$/.test(file);
 const safePath = (file: string) => typeof file === 'string' && /^[A-Za-z0-9._/-]+$/.test(file) &&
   file.split('/').every(part => part && part !== '.' && part !== '..');
 const validHash = (record: any): record is EvidenceHash => record && safePath(record.file) &&

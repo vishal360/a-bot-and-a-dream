@@ -24,6 +24,7 @@ future project.
 | Strict acceptance clock (loosened tolerance removed) | scripts/lighter-acceptance-clock.ts | Matches declared 2s policy |
 | Word operations guide (living deliverable) | Documents/A Bot and a Dream - Terminal Guide.docx | Regenerate per increment |
 | **Research lane v1: SPA/StepM multiplicity gate** | research/spa_verify.py | arch-backed; self-tested (noise→no edge, edge→p=0.0) |
+| **Research lane v2: SPA verdicts wired into strategy promotion** | src/promotion.ts + scripts/research-promote.ts | Fleet gate ratchets to strict on the first PASS manifest (research/promotions.json); FAIL verdicts install nothing |
 
 ## In progress
 
@@ -34,13 +35,12 @@ future project.
 
 ## Next up (ordered)
 
-1. Research lane v2: wire SPA verdicts into strategy promotion — replay N configs → export → `spa_verify.py` → only survivors registerable.
-2. Agent sub-account accounting on the paper ledger.
-3. Proposal contracts (expiry, confidence, ensemble 2-of-3) + shadow mode journaling.
-4. Alerting: push halt/decision events to Telegram or email (the journal records; nothing pushes yet).
-5. Per-bot equity sparklines on the fleet dashboard.
-6. Automated off-machine backup of `data/terminal.sqlite`.
-7. Playwright end-to-end coverage of fleet flows.
+1. Agent sub-account accounting on the paper ledger.
+2. Proposal contracts (expiry, confidence, ensemble 2-of-3; MAPIE conformal intervals feed the confidence width) + shadow mode journaling.
+3. Alerting: push halt/decision events to Telegram or email (the journal records; nothing pushes yet).
+4. Per-bot equity sparklines on the fleet dashboard.
+5. Automated off-machine backup of `data/terminal.sqlite`.
+6. Playwright end-to-end coverage of fleet flows.
 
 ## Parked (with reasons — revisit, do not delete)
 

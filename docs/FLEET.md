@@ -49,6 +49,30 @@ in the journal. Built-ins: `breakout-v1` (1s-mid channel breakout),
 side; venue funding semantics remain unverified). Strategies see only validated
 book/stats/public-trade context plus a 1s mid-price window maintained per bot.
 
+## Research promotion gate
+
+A strategy config may run as a fleet bot only after the research lane's
+SPA/StepM multiplicity gate found that it beats holding cash on a recorded
+capture, corrected for the number of configurations tried
+(research/spa_verify.py decides; src/promotion.ts enforces). The ratchet:
+
+- **unverified** - no `research/promotions.json` installed. Bots run as before,
+  and `GET /api/fleet` labels the mode so the unverified state is never silent.
+- **strict** - a valid manifest is installed. `create`/`update` refuse any
+  (strategy, params) that is not promoted exactly, and running bots skip with a
+  `research-promotion` risk check instead of proposing. An entry is void once
+  the strategy's `artifactHash` changes (code edits invalidate promotions) or
+  the params differ in any way.
+- **refusing** - a manifest exists but is malformed, or was produced by a
+  different verifier version. Every config is refused until research re-runs.
+
+Install or inspect the manifest with
+`bun run scripts/research-promote.ts --capture <exported-capture.json> --market SYMBOL`
+(it replays the candidate configs on the same frames, runs the verifier, and
+only on a PASS verdict writes `research/promotions.json` atomically). FAIL
+verdicts are archived under `research/verdicts/` (git-ignored) and install
+nothing: no verdict, no promotion. `--check` prints the current gate mode.
+
 ## Decision journal
 
 `decision_journal` (SQLite, bounded to 5,000 rows) records bot lifecycle events,
