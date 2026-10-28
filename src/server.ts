@@ -44,6 +44,8 @@ setInterval(() => void markets.refresh(), 10000);
 // Synthetic fills remain a legacy demo only; never advance them as market data.
 // A restart never silently resumes runners, even though the emergency latch persists.
 store.set('bots', store.get('bots').map((b: any) => ({ ...b, status: store.get('halted') ? 'halted' : 'paused' })));
+// Agents share the fleet's restart rule: automation authorization never survives a restart.
+if (store.get('agentEnabled')) { store.set('agentEnabled', false); store.audit('AGENT_AUTOMATION_OFF', 'Restart cleared agent automation authorization'); }
 store.audit('SERVER_START', 'Local paper control plane; all runners paused or halted.');
 const port = Number(process.env.PORT || 3000), origin = `http://127.0.0.1:${port}`;
 const dist = resolve('dist');

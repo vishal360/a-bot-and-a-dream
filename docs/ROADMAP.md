@@ -25,22 +25,22 @@ future project.
 | Word operations guide (living deliverable) | Documents/A Bot and a Dream - Terminal Guide.docx | Regenerate per increment |
 | **Research lane v1: SPA/StepM multiplicity gate** | research/spa_verify.py | arch-backed; self-tested (noise→no edge, edge→p=0.0) |
 | **Research lane v2: SPA verdicts wired into strategy promotion** | src/promotion.ts + scripts/research-promote.ts | Fleet gate ratchets to strict on the first PASS manifest (research/promotions.json); FAIL verdicts install nothing |
+| **Agent sub-account accounting** | src/paper-ledger.ts + src/paper.ts | agent-* fills, Paper.agentOrder(), analytics.agents attribution, session-only agentEnabled latch + agentAllocationPct envelope (fail-closed at 0%) |
 
 ## In progress
 
 | Item | Status | Next action |
 |---|---|---|
 | 24h sustained feed acceptance | FAILED on desktop host (97.64% < 99%); pipeline clean (0 gaps, 0 recording failures) | Run once on a cloud VM per [CLOUD_ACCEPTANCE.md](CLOUD_ACCEPTANCE.md); do not assume, verify |
-| Agent layer | Design locked (sub-account, one-direction rule, proposal contracts, shadow-first) | Needs operator Gemini key per [AGENT_SETUP.md](AGENT_SETUP.md); build order: sub-account → proposal contracts → shadow mode |
+| Agent layer | Design locked; operator key provided and live-verified 2026-10-28; sub-account accounting SHIPPED | Next: proposal contracts (expiry, confidence w/ MAPIE width, ensemble 2-of-3) → shadow mode per [AGENT_SETUP.md](AGENT_SETUP.md) |
 
 ## Next up (ordered)
 
-1. Agent sub-account accounting on the paper ledger.
-2. Proposal contracts (expiry, confidence, ensemble 2-of-3; MAPIE conformal intervals feed the confidence width) + shadow mode journaling.
-3. Alerting: push halt/decision events to Telegram or email (the journal records; nothing pushes yet).
-4. Per-bot equity sparklines on the fleet dashboard.
-5. Automated off-machine backup of `data/terminal.sqlite`.
-6. Playwright end-to-end coverage of fleet flows.
+1. Proposal contracts (expiry, confidence, ensemble 2-of-3; MAPIE conformal intervals feed the confidence width) + shadow mode journaling.
+2. Alerting: push halt/decision events to Telegram or email (the journal records; nothing pushes yet).
+3. Per-bot equity sparklines on the fleet dashboard.
+4. Automated off-machine backup of `data/terminal.sqlite`.
+5. Playwright end-to-end coverage of fleet flows.
 
 ## Parked (with reasons — revisit, do not delete)
 

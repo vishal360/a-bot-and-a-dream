@@ -390,6 +390,8 @@ export class Paper {
     if ((order.source === 'protection' || order.source === 'liquidation') && !reducing) throw new Error('Automatic reductions cannot open exposure');
     // Bounded paper automation: bot opens require the explicit fleet authorization latch.
     if (order.source === 'bot' && !reducing && !this.store.get('fleetEnabled')) throw new Error('Bot automation is not enabled; exposure increases rejected');
+    // Bounded agent automation: agent opens require their own session-only authorization latch.
+    if (order.source === 'agent' && !reducing && !this.store.get('agentEnabled')) throw new Error('Agent automation is not enabled; exposure increases rejected');
     if (reducing) order.leverage = held!.leverage;
     if (!Number.isInteger(order.leverage) || order.leverage < 1 || order.leverage > (reducing ? 20 : leverageLimit(market))) throw new Error('Leverage exceeds the market limit or 20x application cap');
     const best = order.side === 'buy' ? observation.asks[0].price : observation.bids[0].price;
@@ -422,6 +424,17 @@ export class Paper {
       if (exposure + notional > units(risk.maxGrossNotional, 6)) fail(`total exposure exceeds the $${risk.maxGrossNotional} account cap.`);
       const usedMargin = [...balance.inventory.values()].reduce((n, p) => n + p.margin, 0n);
       if (usedMargin + charge > equity * BigInt(allocation) / 100n) fail(`all existing position margins plus pending margin and fees exceed your ${allocation}% allocation. Reduce quantity or review allocation.`);
+      if (order.source === 'agent') {
+        // Agent sub-account slice (docs/AGENT_SETUP.md): one shared envelope across all agents,
+        // bounded by agent-attributed open notional from recorded v2 settlements. Fail-closed at 0%.
+        const agentPct = this.store.get('agentAllocationPct') ?? 0;
+        if (!Number.isInteger(agentPct) || agentPct < 0 || agentPct > 100) throw new Error('Invalid agent allocation policy');
+        if (!agentPct) fail('agent allocation is 0%. Set agentAllocationPct before any agent exposure is admitted.');
+        const agentFills = this.fills().filter(f => /^agent-[a-z0-9-]{3,40}$/.test(f.botId));
+        if (agentFills.some(f => f.settlement?.version !== 2)) throw new Error('Agent fill without a v2 settlement; refusing to compute the agent envelope');
+        const agentOpen = agentFills.reduce((sum, f) => sum + (f.settlement!.effect === 'open' ? 1n : -1n) * BigInt(f.settlement!.quoteMicros), 0n);
+        if (agentOpen + notional > equity * BigInt(agentPct) / 100n) fail(`agent exposure would exceed the ${agentPct}% agent allocation. Reduce quantity or review agentAllocationPct.`);
+      }
     }
     this.lifecycle.reserve({ id: order.id, generation: this.lifecycle.generation, symbol: order.symbol, side: order.side,
       quantityAtoms: requested.toString(), notionalMicros: notional.toString(), chargeMicros: charge.toString() });
@@ -434,17 +447,24 @@ export class Paper {
   async botOrder(body: { id: string; symbol: string; side: 'buy' | 'sell'; quantity: number; leverage: number; botId: string; reason: string }) {
     return this.submit(body, 'bot');
   }
-  private async submit(body: any, source: 'manual' | 'protection' | 'liquidation' | 'bot') {
-    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['id', 'symbol', 'type', 'side', 'quantity', 'limitPrice', 'leverage', ...(source !== 'manual' ? ['reason'] : []), ...(source === 'bot' ? ['botId'] : [])].includes(key))) throw new Error('Unknown paper order field');
+  /** Agent automation entry (docs/AGENT_SETUP.md). Agents are proposal sources only: the same
+   *  executor, reservations, caps and halts apply; the agent sub-account attributes the fill and
+   *  bounds the agent slice of exposure. */
+  async agentOrder(body: { id: string; symbol?: string; side: 'buy' | 'sell'; quantity: number; leverage?: number; agentId: string; reason: string }) {
+    return this.submit(body, 'agent');
+  }
+  private async submit(body: any, source: 'manual' | 'protection' | 'liquidation' | 'bot' | 'agent') {
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => !['id', 'symbol', 'type', 'side', 'quantity', 'limitPrice', 'leverage', ...(source !== 'manual' ? ['reason'] : []), ...(source === 'bot' ? ['botId'] : []), ...(source === 'agent' ? ['agentId'] : [])].includes(key))) throw new Error('Unknown paper order field');
     body = { ...body }; // The admitted intent cannot be mutated by an internal caller across awaits.
     const symbol: string = body.symbol ?? 'BTC', type: string = body.type ?? 'market';
     if (typeof body.id !== 'string' || !/^[a-zA-Z0-9-]{8,80}$/.test(body.id) || typeof symbol !== 'string' || !/^[A-Za-z0-9._/-]{1,80}$/.test(symbol) || !['market', 'limit'].includes(type) || !['buy', 'sell'].includes(body.side) || !Number.isFinite(body.quantity) || body.quantity <= 0 || body.quantity > 1e9) throw new Error('Invalid IOC order; provide unique id, market, buy/sell and quantity');
     if (source === 'bot' && (typeof body.botId !== 'string' || !/^fleet-[a-z0-9-]{3,40}$/.test(body.botId))) throw new Error('Valid bot ID required');
+    if (source === 'agent' && (typeof body.agentId !== 'string' || !/^agent-[a-z0-9-]{3,40}$/.test(body.agentId))) throw new Error('Valid agent ID required');
     if (type === 'limit' && (typeof body.limitPrice !== 'number' || !Number.isFinite(body.limitPrice) || body.limitPrice <= 0)) throw new Error('Positive limit price required');
     if (type === 'market' && body.limitPrice !== undefined) throw new Error('Market IOC cannot specify a limit price');
     if (body.leverage !== undefined && (!Number.isInteger(body.leverage) || body.leverage < 1 || body.leverage > 20)) throw new Error('Leverage exceeds the market limit or 20x application cap');
     const intent: PaperIntent = { symbol, type: type as 'market' | 'limit', side: body.side, quantity: body.quantity,
-      limitPrice: body.limitPrice ?? null, leverage: body.leverage ?? null, source, reason: body.reason ?? null, botId: source === 'bot' ? body.botId : null };
+      limitPrice: body.limitPrice ?? null, leverage: body.leverage ?? null, source, reason: body.reason ?? null, botId: source === 'bot' ? body.botId : source === 'agent' ? body.agentId : null };
     const prior = this.lifecycle.duplicate(body.id, intent);
     if (prior) return prior;
     if (this.busy || Date.now() - this.lastUse < 1000) throw new Error('Paper matcher busy; wait before next order');
@@ -471,7 +491,11 @@ export class Paper {
         const balance = this.balance();
         if (type === 'limit') units(body.limitPrice, observation.market.supported_price_decimals);
         const requested = units(body.quantity, 8), held = balance.inventory.get(`${symbol}-USD`)?.quantity ?? 0n, reducing = positionEffect(body.side, requested, held) === 'reduce';
-        if (order.effect !== (reducing ? 'reduce' : 'open') || (source !== 'manual' && !reducing)) throw new Error('Position effect changed during latency');
+        // Drift check: the admitted effect must still match the position state at execution.
+        // (A stale manual-era clause stood here — "non-manual cannot open" — which blocked
+        // every bot/agent open in the real executor; admission-time gates already gatekeep
+        // opens per source: latches for bot/agent, open-refusal for protection/liquidation.)
+        if (order.effect !== (reducing ? 'reduce' : 'open')) throw new Error('Position effect changed during latency');
         const leverage = order.leverage;
         if (!Number.isInteger(leverage) || leverage < 1 || leverage > (reducing ? 20 : leverageLimit(observation.market))) throw new Error('Leverage exceeds the market limit or 20x application cap');
         if (!reducing && held && balance.inventory.get(`${symbol}-USD`)!.leverage !== leverage) throw new Error('Close the position before changing leverage');
@@ -521,7 +545,7 @@ export class Paper {
         }
         this.lifecycle.assertBudget(order.id, reducing ? 0n : quote, reducing ? 0n : charge);
         if (!filled) throw new Error('No executable depth');
-        const fill: Fill = { id: body.id, account, botId: source === 'bot' ? body.botId : 'orion', symbol: `${symbol}-USD`, side: body.side, quantity: filled, price: cost / filled, fee, multiplier: 1, source: 'paper', reason: `${source === 'bot' ? `Bot ${body.botId}` : source === 'protection' ? 'Protection' : 'Manual'} ${type} IOC${body.reason === 'stop-loss' || body.reason === 'take-profit' ? ` / ${body.reason}` : ''}; mainnet ${this.stream ? 'validated WebSocket' : 'REST'} depth ${observation.id}; simulated, not venue execution`, time: new Date().toISOString() };
+        const fill: Fill = { id: body.id, account, botId: source === 'bot' ? body.botId : source === 'agent' ? body.agentId : 'orion', symbol: `${symbol}-USD`, side: body.side, quantity: filled, price: cost / filled, fee, multiplier: 1, source: 'paper', reason: `${source === 'bot' ? `Bot ${body.botId}` : source === 'agent' ? `Agent ${body.agentId}` : source === 'protection' ? 'Protection' : 'Manual'} ${type} IOC${body.reason === 'stop-loss' || body.reason === 'take-profit' ? ` / ${body.reason}` : ''}; mainnet ${this.stream ? 'validated WebSocket' : 'REST'} depth ${observation.id}; simulated, not venue execution`, time: new Date().toISOString() };
         fill.settlement = { version: 2, effect: reducing ? 'reduce' : 'open', quantityAtoms: units(filled, 8).toString(), quoteMicros: matched.quoteMicros, feeMicros: matched.feeMicros, leverage: reducing ? balance.inventory.get(`${symbol}-USD`)!.leverage : leverage,
           ...(source === 'liquidation' ? { liquidationFeeMicros: ((quote + 99n) / 100n).toString() } : {}) };
         if (source === 'liquidation') fill.reason = 'Approximate paper liquidation / depth IOC / 1% notional surcharge; not venue LLP or ADL';

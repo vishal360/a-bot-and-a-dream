@@ -10,7 +10,7 @@ export type PaperReservation = {
 };
 export type PaperIntent = {
   symbol: string; side: 'buy' | 'sell'; quantity: number; type: 'market' | 'limit';
-  limitPrice: number | null; leverage: number | null; source: 'manual' | 'protection' | 'liquidation' | 'bot'; reason: string | null; botId: string | null;
+  limitPrice: number | null; leverage: number | null; source: 'manual' | 'protection' | 'liquidation' | 'bot' | 'agent'; reason: string | null; botId: string | null;
 };
 
 /** Local-paper authority only. No venue acknowledgements or live-risk permissions. */

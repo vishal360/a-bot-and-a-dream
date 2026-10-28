@@ -11,7 +11,9 @@ infrastructure and the free tier is enough for shadow mode.
 
 1. Open **https://aistudio.google.com** and sign in with a Google account.
 2. Click **Get API key** → **Create API key** (choose or create a project when asked).
-3. Copy the key (starts with `AIza...`).
+3. Copy the key. AI Studio now issues auth keys that start with `AQ.` (legacy
+   keys started with `AIza`); both work — the runtime sends the GEMINI_API_KEY
+   value as the API key header.
 4. In AI Studio's billing/settings, set a **spend cap** (or stay on the free tier
    for shadow mode — free-tier rate limits are sufficient for scheduled agents).
 5. Store it locally, never in chat, never in the repository:
@@ -36,9 +38,14 @@ Set-Content -NoNewline -Path .env -Value "GEMINI_API_KEY=AIza...your-key..."
 
 ## What the agents will be (build order)
 
-1. **Agent sub-account** — a dedicated paper accounting slice with its own
-   capital allocation, baseline and journal, so agent P&L is measured separately
-   from manual trading and strategy bots.
+1. **Agent sub-account — SHIPPED 2026-10-28.** The paper ledger accepts `agent-*`
+   fills; `paperAnalytics().agents` attributes closed legs to the closing agent
+   (fees to the filling agent) and `bots` again carries real per-actor rows.
+   `Paper.agentOrder()` runs agent orders through the same executor behind a
+   session-only `agentEnabled` latch (cleared and audited on restart) and an
+   `agentAllocationPct` envelope fail-closed at 0%, bounded by agent-attributed
+   open notional. Reductions are never latch-blocked. Decision journaling for
+   agent proposals arrives with proposal contracts (step 2).
 2. **Proposal contracts** — typed proposals with market, direction, horizon,
    confidence, rationale and an expiry timestamp; stale proposals auto-reject.
    Ensemble rule: 2-of-3 agent agreement before the risk check sees a proposal.

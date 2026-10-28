@@ -94,7 +94,7 @@ export function paperBalance(fills: Fill[], capital: number, events: LedgerEvent
     ids.add(f.id);
     if (!Number.isFinite(Date.parse(f.time))) throw new Error('Invalid paper timestamp');
     if (f.account !== 'paper-mainnet' || !/^[A-Za-z0-9._/-]{1,80}-USD$/.test(f.symbol) ||
-        (f.botId !== 'orion' && !/^fleet-[a-z0-9-]{3,40}$/.test(f.botId)) || f.multiplier !== 1 || !['buy', 'sell'].includes(f.side)) throw new Error('Unsupported paper inventory');
+        (f.botId !== 'orion' && !/^fleet-[a-z0-9-]{3,40}$/.test(f.botId) && !/^agent-[a-z0-9-]{3,40}$/.test(f.botId)) || f.multiplier !== 1 || !['buy', 'sell'].includes(f.side)) throw new Error('Unsupported paper inventory');
     const p = inventory.get(f.symbol) ?? { quantity: 0n, basis: 0n, entryFees: 0n, margin: 0n, leverage: 1, funding: 0n };
     inventory.set(f.symbol, p);
     const q = units(f.quantity, 8);
@@ -195,29 +195,32 @@ export function paperAnalytics(fills: Fill[], marks: Mark[], capital: number, no
     return quantity ? dollars(quote) / (Number(quantity) / 1e8) : null;
   };
   const margin = [...b.inventory.values()].reduce((sum, p) => sum + p.margin, 0n);
-  // Per-bot attribution: closed legs belong to the bot that closed them; fees to the fill's bot.
-  // Mixed manual/bot positions share one average position, so open P&L is not attributable.
-  const botIds = [...new Set(fills.map(f => f.botId))].sort();
-  const botFees = new Map<string, bigint>();
+  // Per-actor attribution: closed legs belong to the actor that closed them; fees to the fill's actor.
+  // Mixed manual/bot/agent positions share one average position, so open P&L is not attributable.
+  const actorIds = [...new Set(fills.map(f => f.botId))].sort();
+  const actorFees = new Map<string, bigint>();
   for (const f of fills) {
     const fee = f.settlement ? BigInt(f.settlement.feeMicros) : units(f.fee.toFixed(6), 6);
-    botFees.set(f.botId, (botFees.get(f.botId) ?? 0n) + fee);
+    actorFees.set(f.botId, (actorFees.get(f.botId) ?? 0n) + fee);
   }
-  const bots = botIds.map(botId => {
-    const closed = b.trades.filter(t => t.botId === botId), micros = b.tradeMicros.filter((_, i) => b.trades[i].botId === botId);
+  const actors = actorIds.map(actorId => {
+    const closed = b.trades.filter(t => t.botId === actorId), micros = b.tradeMicros.filter((_, i) => b.trades[i].botId === actorId);
     const wins = micros.filter(n => n > 0n).length;
-    const botFills = fills.filter(f => f.botId === botId);
-    return { botId, realized: dollars(micros.reduce((s, n) => s + n, 0n)), fees: dollars(botFees.get(botId) ?? 0n),
-      trades: closed.length, winRate: closed.length ? wins / closed.length : 0, unrealized: null as number | null, fills: botFills.length,
-      volume: botFills.reduce((s, f) => s + (f.settlement ? Number(f.settlement.quoteMicros) : Number(units((f.quantity * f.price).toFixed(6), 6))) / 1e6, 0) };
+    const actorFills = fills.filter(f => f.botId === actorId);
+    return { botId: actorId, realized: dollars(micros.reduce((s, n) => s + n, 0n)), fees: dollars(actorFees.get(actorId) ?? 0n),
+      trades: closed.length, winRate: closed.length ? wins / closed.length : 0, unrealized: null as number | null, fills: actorFills.length,
+      volume: actorFills.reduce((s, f) => s + (f.settlement ? Number(f.settlement.quoteMicros) : Number(units((f.quantity * f.price).toFixed(6), 6))) / 1e6, 0) };
   });
+  const bots = actors.filter(row => !row.botId.startsWith('agent-'));
+  const agents = actors.filter(row => row.botId.startsWith('agent-'));
   return { capital, cash: dollars(b.cash), marginUsed: dollars(margin), gross: dollars(b.gross), fees: dollars(b.fees), funding: dollars(b.funding), transfers: dollars(b.transfers), liquidationFees: dollars(b.liquidationFees), realized: dollars(b.realized), unrealized,
     averageBuy: b.inventory.size > 1 ? null : executionAverage('buy'), averageSell: b.inventory.size > 1 ? null : executionAverage('sell'),
     equity: missingMarks ? null : dollars(b.cash + margin + value), positions, trades: b.trades, fillCount: fills.length,
     today: dollars(b.daily.get(now.toISOString().slice(0, 10)) ?? 0n), daily: [...b.daily].map(([day, pnl]) => ({ day, pnl: dollars(pnl) })),
     winRate, profitFactor: lossSum ? Number(winSum) / Number(lossSum) : null, expectancy: b.trades.length ? dollars(net) / b.trades.length : 0,
     maxDrawdown: b.maxDrawdown, curve: [{ time: fills[0]?.time ?? now.toISOString(), value: capital, drawdown: 0 }, ...b.curve],
-    bots: fills.length ? [{ botId: 'orion', realized: dollars(b.realized), fees: dollars(b.fees), trades: b.trades.length, winRate, unrealized, fills: fills.length }] : [],
+    bots: fills.length ? bots : [],
+    agents,
     best: sorted[0] ?? null, worst: sorted.at(-1) ?? null, missingMarks, staleMarks,
     accounting: { version: 3, cashMicros: b.cash.toString(), quantityAtoms: b.quantity.toString(), basisMicros: b.basis.toString(), realizedMicros: b.realized.toString(), fundingMicros: b.funding.toString(), transferMicros: b.transfers.toString(), legacyFills: b.legacyFills,
       inventory: [...b.inventory].map(([symbol, p]) => ({ symbol, quantityAtoms: p.quantity.toString(), basisMicros: p.basis.toString(), entryFeeMicros: p.entryFees.toString() })) } };
