@@ -46,11 +46,21 @@ Set-Content -NoNewline -Path .env -Value "GEMINI_API_KEY=AIza...your-key..."
    `agentAllocationPct` envelope fail-closed at 0%, bounded by agent-attributed
    open notional. Reductions are never latch-blocked. Decision journaling for
    agent proposals arrives with proposal contracts (step 2).
-2. **Proposal contracts** — typed proposals with market, direction, horizon,
-   confidence, rationale and an expiry timestamp; stale proposals auto-reject.
-   Ensemble rule: 2-of-3 agent agreement before the risk check sees a proposal.
-3. **Shadow mode** — agents propose for N days; the decision journal records what
-   would have happened; promotion to live paper execution is an explicit gate.
+2. **Proposal contracts — SHIPPED 2026-10-30.** Typed, expiring direction opinions
+   (src/agent-contract.ts): the runtime owns identity and timestamps (the model
+   never claims an id, a symbol or a clock) and expiry is DERIVED from
+   createdAt + horizonSeconds. Three personas (momentum / skeptic / flow) form
+   the 2-of-3 ensemble (src/agent-ensemble.ts).
+3. **Shadow mode — SHIPPED 2026-10-30.** The runtime (src/agent-runtime.ts,
+   wired in src/server.ts) calls the models every 10 minutes for up to 2
+   watched markets, journals every proposal/rejection/outcome into the decision
+   journal (journal-as-agent-memory), ensembles 2-of-3, and grades each ensemble
+   opinion at expiry against the real mark. NO ORDERS EVER: shadow mode is
+   journal-only. Enable for this session: POST /api/agents/enable
+   {"confirm":"ENABLE AGENT SHADOW"}; disable: POST /api/agents/disable;
+   status: GET /api/agents; manual cycle: POST /api/agents/tick. Daily model
+   request cap 500 (hard stop, journaled once); a missing key degrades to idle
+   agents. Promotion to live paper execution remains an explicit future gate.
 4. **Risk reviewer** — an agent that reads the journal and flags risk-off
    conditions to the operator; it can only suggest, and the fixed risk check can
    still veto everything.

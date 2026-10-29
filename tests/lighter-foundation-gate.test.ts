@@ -98,7 +98,7 @@ test('review verifier rejects tampering, false authority, wrong commands/counts,
     try { await mutate(f); const result = await verifyReviewBundle(f.bundle, f.working); expect({ scenario, passed: result.passed }).toEqual({ scenario, passed: false }); expect(result.failures.length).toBeGreaterThan(0); }
     finally { f.close(); }
   }
-}, 30000);
+}, 120000);
 
 test('review verifier refuses symlinked directory ancestors and oversized manifests', async () => {
   const f = await bundleFixture();

@@ -19,6 +19,7 @@ import { FleetManager } from './fleet';
 import { framesFromCapture, replayStrategy } from './backtest-replay';
 import { loadPromotionGate } from './promotion';
 import { DataEngine } from './data-engine';
+import { AgentRuntime } from './agent-runtime';
 mkdirSync('data', { recursive: true });
 const store = new Store('data/terminal.sqlite');
 const operations = new Operations(store, new Vault('data/vault.key'));
@@ -33,7 +34,7 @@ const journal = new DecisionJournal(store);
 // Durable data engine: continuously export terminal captures to data/archive before the
 // evidence ring evicts them (docs/DATA_ENGINE.md). Recording itself keeps rolling via
 // capture roll in lighter-stream.ts, so a capacity-limited capture never ends recording.
-const archive = feed.evidence ? new DataEngine(store, feed.evidence, { root: 'data/archive' }) : null;
+const archive = feed.evidence ? new DataEngine(store, feed.evidence, { root: 'data/archive', keepBytes: 8 * 1024 * 1024 * 1024 }) : null;
 archive?.start();
 const strategyRegistry = new StrategyRegistry();
 for (const strategy of builtinStrategies) strategyRegistry.register(strategy);
@@ -53,6 +54,22 @@ setInterval(() => void markets.refresh(), 10000);
 store.set('bots', store.get('bots').map((b: any) => ({ ...b, status: store.get('halted') ? 'halted' : 'paused' })));
 // Agents share the fleet's restart rule: automation authorization never survives a restart.
 if (store.get('agentEnabled')) { store.set('agentEnabled', false); store.audit('AGENT_AUTOMATION_OFF', 'Restart cleared agent automation authorization'); }
+const agents = new AgentRuntime(store, journal, () => {
+  try {
+    const feedStatus = feed.status();
+    const equity = paper.status().analytics.equity;
+    const out: { symbol: string; mark: number; fundingRate: number | null; equity: number | null; time: string }[] = [];
+    for (const b of (feedStatus.books ?? []).slice(0, 2)) {
+      const quote = feed.read(b.market.market_id);
+      if (!quote || !quote.bids.length || !quote.asks.length) continue;
+      out.push({ symbol: b.market.symbol, mark: (quote.bids[0].price + quote.asks[0].price) / 2,
+        fundingRate: quote.stats?.fundingRate ?? null, equity, time: new Date().toISOString() });
+    }
+    return out;
+  } catch { return []; }
+}, fetch);
+// Context comes from the feed's OWN watched books (not the venue-wide market list).
+agents.start();
 store.audit('SERVER_START', 'Local paper control plane; all runners paused or halted.');
 const port = Number(process.env.PORT || 3000), origin = `http://127.0.0.1:${port}`;
 const dist = resolve('dist');
@@ -114,7 +131,10 @@ const server = Bun.serve({
             const source = body.bars ? 'user-uploaded / unverified' : 'synthetic';
             const result = backtest(bars, config, source); return json({ id: store.saveRun(result), result });
           } else if (url.pathname === '/api/promote') return json({ hash: store.promote(body.id) });
-          else if (url.pathname === '/api/fleet/enable') return json(fleet.enable(body));
+          else if (url.pathname === '/api/agents/enable') return json(agents.enable(body));
+        else if (url.pathname === '/api/agents/disable') return json(agents.disable());
+        else if (url.pathname === '/api/agents/tick') return json(await agents.tick());
+        else if (url.pathname === '/api/fleet/enable') return json(fleet.enable(body));
           else if (url.pathname === '/api/fleet/disable') return json(fleet.disable());
           else if (url.pathname === '/api/fleet/create') return json(fleet.create(body));
           else if (url.pathname === '/api/fleet/update') return json(fleet.update(body));
@@ -152,6 +172,7 @@ const server = Bun.serve({
         if (url.pathname === '/api/fleet') return json(fleet.status());
         if (url.pathname === '/api/fleet/journal') return json({ entries: journal.list({ botId: url.searchParams.get('botId') ?? undefined, limit: Number(url.searchParams.get('limit') ?? 200) }) });
         if (url.pathname === '/api/archive') return json(archive ? archive.status() : { enabled: false });
+        if (url.pathname === '/api/agents') return json(agents.status());
         if (url.pathname === '/api/feeds/lighter/trades') {
           const marketId = url.searchParams.get('marketId');
           if (!marketId || !/^\d{1,10}$/.test(marketId)) throw new Error('Valid marketId required');

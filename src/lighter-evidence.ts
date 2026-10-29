@@ -104,7 +104,7 @@ export function replayCapture(capture: ReplayCapture) {
       frames.length !== m.frames || !['capturing', 'closed', 'interrupted', 'limited'].includes(m.state)) throw new Error('Invalid replay manifest');
   let bytes = 0;
   for (const f of frames) {
-    if (typeof f?.raw !== 'string' || f.raw.length > 131072) throw new Error('Invalid replay frame size');
+    if (typeof f?.raw !== 'string' || f.raw.length > 524288) throw new Error('Invalid replay frame size');
     bytes += Buffer.byteLength(f.raw, 'utf8');
     if (bytes > 8 * 1024 * 1024) throw new Error('Replay byte limit exceeded');
   }

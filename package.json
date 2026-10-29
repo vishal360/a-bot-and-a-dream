@@ -5,10 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "bun run src/server.ts",
-    "build": "bun x vite build",
+    "build": "vite build",
     "start": "bun run src/server.ts",
     "test": "bun test ./tests",
-    "typecheck": "bun x tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "check": "bun run typecheck && bun run test && bun run build",
     "test:e2e": "bun run build && bun node_modules/@playwright/test/cli.js test"
   },

@@ -147,7 +147,7 @@ export class LighterStream {
     const start = this.clock(); this.lastMessage = start.mono; this.counts.frames++;
     let frame: any, fault: string | null = null, trades: PublicTrade[] = [], isTrade = false;
     try {
-      if (typeof raw !== 'string' || raw.length > 131072) throw new Error('Invalid/oversized WebSocket frame');
+      if (typeof raw !== 'string' || raw.length > 524288) throw new Error(`Invalid/oversized WebSocket frame (typeof=${typeof raw}, length=${typeof raw === 'string' ? raw.length : 'non-string'})`);
       frame = JSON.parse(raw);
       if (frame?.type === 'ping') { this.socket?.send(JSON.stringify({ type: 'pong' })); return; }
       if (['connected', 'pong'].includes(frame?.type)) return;
@@ -231,7 +231,7 @@ export class LighterStream {
     const books = [...this.books.values()].map(b => b.view(this.clock()));
     return { mode: this.options.marketStats ? 'read-only public feed / paper authority' : 'read-only shadow', executionSource: this.options.marketStats ? 'validated WebSocket / paper only' : 'REST (unchanged)', executionEnabled: false, agentsEnabled: false, state: this.state, error: this.error, epoch: this.epoch || null,
       healthy: this.state === 'streaming' && books.length > 0 && books.every(b => b.status === 'healthy' && (!this.options.marketStats || !!this.read(b.market.market_id, 1)?.stats)), books, counts: { ...this.counts },
-      limits: { markets: 32, levelsPerSide: 5000, frameCharacters: 131072, staleMs: this.staleMs, journalRecords: this.retention, metricSamples: 512 },
+      limits: { markets: 32, levelsPerSide: 5000, frameCharacters: 524288, staleMs: this.staleMs, journalRecords: this.retention, metricSamples: 512 },
       stats: [...this.books.keys()].map(id => ({ marketId: id, stats: this.read(id, 1)?.stats ?? null })), revision: this.revision,
       evidence: this.evidence?.status() ?? { enabled: false },
       trades: [...this.books.keys()].map(id => ({ marketId: id, nonce: this.tradeNonces.get(id) ?? null,

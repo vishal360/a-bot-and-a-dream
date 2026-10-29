@@ -3,7 +3,8 @@ import type { Store } from './store';
 export type DecisionKind =
   | 'bot-create' | 'bot-update' | 'bot-delete' | 'bot-start' | 'bot-pause' | 'bot-halt'
   | 'propose' | 'skip' | 'submit' | 'fill' | 'partial' | 'reject'
-  | 'guard-pause' | 'guard-resume' | 'automation-enable' | 'automation-disable';
+  | 'guard-pause' | 'guard-resume' | 'automation-enable' | 'automation-disable'
+  | 'agent-proposal' | 'agent-reject' | 'agent-outcome';
 export type RiskCheck = { check: string; pass: boolean; detail?: string };
 export type DecisionInput = Record<string, number | string | boolean | null>;
 
@@ -18,7 +19,8 @@ const SYMBOL = /^[A-Za-z0-9._/-]{1,80}$/;
 const ID = /^[a-z0-9-]{3,40}$/;
 const STRATEGY = /^[a-z0-9-]{2,60}$/;
 const KINDS: DecisionKind[] = ['bot-create', 'bot-update', 'bot-delete', 'bot-start', 'bot-pause', 'bot-halt',
-  'propose', 'skip', 'submit', 'fill', 'partial', 'reject', 'guard-pause', 'guard-resume', 'automation-enable', 'automation-disable'];
+  'propose', 'skip', 'submit', 'fill', 'partial', 'reject', 'guard-pause', 'guard-resume', 'automation-enable', 'automation-disable',
+  'agent-proposal', 'agent-reject', 'agent-outcome'];
 const bounded = (value: unknown, max: number) => typeof value === 'string' && value.length <= max ? value : null;
 
 /** Append-only bounded log of every automated decision, its inputs and its risk checks.

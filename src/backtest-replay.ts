@@ -42,7 +42,7 @@ export function replayStrategy(input: {
   if (!Number.isInteger(input.leverage) || input.leverage < 1 || input.leverage > 20) throw new Error('Invalid replay leverage');
   if (!Number.isFinite(input.notionalPerOrderUsd) || input.notionalPerOrderUsd < 10 || input.notionalPerOrderUsd > input.capital) throw new Error('Invalid notionalPerOrderUsd');
   if (!Array.isArray(frames) || !frames.length || frames.length > MAX_FRAMES) throw new Error(`Replay needs 1–${MAX_FRAMES} recorded frames`);
-  for (const f of frames) if (typeof f?.raw !== 'string' || !f.raw.length || f.raw.length > 131072 || !Number.isFinite(f.wall) || !Number.isFinite(f.mono) || f.mono < 0) throw new Error('Invalid replay frame');
+  for (const f of frames) if (typeof f?.raw !== 'string' || !f.raw.length || f.raw.length > 524288 || !Number.isFinite(f.wall) || !Number.isFinite(f.mono) || f.mono < 0) throw new Error('Invalid replay frame');
 
   const book = new LighterBook(market, staleMs);
   const batch: PublicTrade[] = [];

@@ -34,7 +34,7 @@ future project.
 | Item | Status | Next action |
 |---|---|---|
 | 24h sustained feed acceptance | FAILED on desktop host (97.64% < 99%); pipeline clean (0 gaps, 0 recording failures) | Run once on a cloud VM per [CLOUD_ACCEPTANCE.md](CLOUD_ACCEPTANCE.md); do not assume, verify |
-| Agent layer | Design locked; operator key provided and live-verified 2026-10-28; sub-account accounting SHIPPED | Next: proposal contracts (expiry, confidence w/ MAPIE width, ensemble 2-of-3) → shadow mode per [AGENT_SETUP.md](AGENT_SETUP.md) |
+| Agent layer | Sub-account + proposal contracts + shadow mode SHIPPED (2-of-3 personas, session-only latch, 500/day cap, journal-only) | Operator reviews the shadow journal (GET /api/agents, /api/fleet/journal); MAPIE confidence widths + promotion-to-execution remain explicit future gates |
 
 ## Next up (ordered)
 
