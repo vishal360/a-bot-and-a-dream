@@ -20,6 +20,16 @@
 .agents-console .agent-meta{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
 .agents-console .agent-meta small{font-size:9px;color:#71839c;letter-spacing:.3px}
 
+/* Vote history strip: the analyst's last 12 votes as direction squares */
+.agents-console .vote-strip{display:flex;gap:4px;margin:4px 0 10px;flex-wrap:wrap}
+.agents-console .vote-cell{
+  width:16px;height:16px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;
+  font-size:9px;border:1px solid transparent;
+}
+.agents-console .vote-cell.green{background:rgba(64,228,190,.12);color:#5bddb8;border-color:#2f6a58}
+.agents-console .vote-cell.red{background:rgba(255,115,134,.12);color:#ff8393;border-color:#8c3748}
+.agents-console .vote-cell.amber{background:rgba(215,183,110,.1);color:#d7b76e;border-color:#72603a}
+
 /* Quorum visual: three analyst dots, filled = agreeing */
 .agents-console .quorum-row{display:flex;align-items:center;gap:18px;margin:14px 0}
 .agents-console .quorum-visual{display:flex;align-items:center;gap:8px}
@@ -42,4 +52,25 @@
 .agents-console .warnings{margin-top:10px}
 .agents-console .warnings p{color:#d7b76e;font-size:11px}
 
-@media(max-width:1100px){.agents-console .agents-grid{grid-template-columns:1fr}}
+/* Live opinions: open ensemble/persona calls watched against the real mark */
+.agents-console .live-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;margin-top:14px}
+.agents-console .live-card{margin:0}
+.agents-console .live-card .row{align-items:baseline;justify-content:space-between;margin-bottom:8px}
+.agents-console .live-nums{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:10px 0}
+.agents-console .live-nums small{display:block;font-size:8px;letter-spacing:1px;color:#71839c;text-transform:uppercase}
+.agents-console .live-nums strong{font-family:Consolas,monospace;font-weight:400;font-size:15px;color:#dfe9f6;font-variant-numeric:tabular-nums}
+.agents-console .live-nums strong.green{color:#5bddb8}
+.agents-console .live-nums strong.red{color:#ff8393}
+.agents-console .live-nums strong.mono{font-variant-numeric:tabular-nums}
+
+/* Off-state banner: honest explanation with the fix one click away */
+.agents-console .agents-off-banner{
+  display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;
+  border:1px solid #72603a;background:rgba(215,183,110,.06);border-radius:10px;
+  padding:14px 18px;margin-bottom:22px;font-size:13px;color:#c3d0e0;
+}
+.agents-console .agents-off-banner .primary{
+  background:linear-gradient(120deg,#3fd8b6,#2ea88c);border-color:#46d4b3;color:#06231d;font-weight:650;
+}
+
+@media(max-width:1100px){.agents-console .agents-grid{grid-template-columns:1fr}.agents-console .live-grid{grid-template-columns:1fr}}

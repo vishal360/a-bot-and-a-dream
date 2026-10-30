@@ -94,10 +94,32 @@ test('shadows expire into journaled outcomes graded against the real mark', asyn
     await runtime.tick(); // opens a long shadow with markAt = 100, expires in 900s
     tickClock(901000); mark = 103; // horizon passed; price went up: long was correct
     const result = await runtime.tick();
-    expect(result.shadowsClosed).toBe(1);
+    expect(result.shadowsClosed).toBe(4); // 1 ensemble + 3 persona opinions graded
     const outcomes = journal.list({ botId: 'agent-ensemble', limit: 10 }).filter((r: any) => r.decision === 'agent-outcome');
     expect(outcomes).toHaveLength(1);
     expect(outcomes[0].rationale).toContain('direction correct');
+    const personaOutcomes = journal.list({ limit: 20 }).filter((r: any) => r.decision === 'agent-outcome' && r.bot_id !== 'agent-ensemble');
+    expect(personaOutcomes.length).toBe(3);
+    const momentum = personaOutcomes.find((r: any) => r.bot_id === 'agent-gemini-momentum')!;
+    expect(momentum.inputs.grade).toBe('correct'); // long from 100 to 103
+    expect((runtime as any).status().personaPending).toBe(3); // the fresh cycle opened 3 new persona votes
+  } finally { close(); }
+});
+
+test('every persona vote is tracked to expiry and graded under its own agent id', async () => {
+  let mark = 100;
+  const { s, journal, runtime, close } = harness(() => contract());
+  (runtime as any).context = () => context(mark);
+  try {
+    runtime.enable({ confirm: 'ENABLE AGENT SHADOW' });
+    await runtime.tick();
+    const pending = s.get('agentPersonaPending') as any[];
+    expect(pending).toHaveLength(3);
+    expect(pending.every((p: any) => p.agentId.startsWith('agent-'))).toBe(true);
+    tickClock(901000); mark = 97; // price DROPS: the long votes were wrong
+    await runtime.tick();
+    const wrong = journal.list({ limit: 20 }).filter((r: any) => r.decision === 'agent-outcome' && (r.inputs as any)?.grade === 'wrong');
+    expect(wrong.length).toBe(4); // 3 personas + the ensemble, all long into a falling mark
   } finally { close(); }
 });
 

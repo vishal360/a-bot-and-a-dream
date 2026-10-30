@@ -20,6 +20,9 @@ export const DEFAULT_AGENTS: AgentPersona[] = [
 // (HTTP 404 "no longer available to new users"); 3.8-flash occasionally 503s under load
 // (the runtime retries), 3.5-flash-lite serves reliably.
 
+/** One open shadow opinion: the ENSEMBLE's formed direction, or an individual
+ *  persona's raw vote. Both are graded at expiry against the real mark — the
+ *  ensemble to judge the quorum mechanism, the personas to judge each analyst. */
 export type PendingShadow = {
   id: string; agentId: string; symbol: string; direction: 'long' | 'short'; confidence: number;
   markAt: number; rationale: string; createdAt: string; expiresAtMs: number;
@@ -38,6 +41,10 @@ export type AgentRuntimeOptions = {
  *  Gemini models for proposals, builds expiring contracts, applies the 2-of-3 ensemble,
  *  journals everything (journal-as-agent-memory) and runs SHADOW MODE: proposals are
  *  recorded and graded at expiry against the real mark, but NOTHING is ever executed.
+ *
+ *  Accountability is per persona: EVERY valid persona proposal is tracked to expiry and
+ *  graded individually (botId = the persona's agentId), alongside the ensemble grade —
+ *  so the dashboard can show which analysts deserve trust and which do not.
  *
  *  Fail-closed properties: the runtime proposes only while the session-only
  *  `agentEnabled` latch is on (cleared on restart, audited); a missing or exhausted
@@ -93,19 +100,33 @@ export class AgentRuntime {
   }
 
   /** Dashboard feed (GET /api/agents/activity): runtime status + the agent-memory
-   *  journal (every proposal, rejection, ensemble decision and graded outcome). */
+   *  journal + the live marks needed to grade open opinions client-side. */
   activity(limit = 150) {
-    return { status: this.status(), entries: this.journal.listByBotPrefix('agent-', limit) };
+    let marks: Record<string, number> = {};
+    try { marks = Object.fromEntries(this.context().map(m => [m.symbol, m.mark])); } catch { marks = {}; }
+    return {
+      status: this.status(),
+      entries: this.journal.listByBotPrefix('agent-', limit),
+      marks,
+      open: {
+        ensemble: (this.store.get('agentShadowPending') ?? []) as PendingShadow[],
+        personas: (this.store.get('agentPersonaPending') ?? []) as PendingShadow[],
+      },
+    };
   }
 
   status() {
     const pending = (this.store.get('agentShadowPending') ?? []) as PendingShadow[];
+    const personas = (this.store.get('agentPersonaPending') ?? []) as PendingShadow[];
     return {
       enabled: !!this.store.get('agentEnabled'),
       apiKeyPresent: !!this.apiKey(),
       models: this.agents.map(a => ({ agentId: a.agentId, model: a.model })),
       requests: { day: this.dayKey(), used: this.requestsUsed(), cap: this.cap },
       pendingShadow: pending.length,
+      pendingShadowList: pending,
+      personaPending: personas.length,
+      personaPendingList: personas,
       intervalMs: this.intervalMs,
       lastTickAt: this.lastTickAt,
       failures: this.failures.slice(-5),
@@ -143,6 +164,7 @@ export class AgentRuntime {
               inputs: { direction: proposal.direction, confidence: proposal.confidence, horizonSeconds: proposal.horizonSeconds, expiresAt: proposal.expiresAt, mark: market.mark, model: agent.model },
               riskChecks: [{ check: 'shadow-mode', pass: true, detail: 'no orders; journal-only' }],
             });
+            this.trackPersona(proposal, market.mark);
             valid.push(proposal);
             proposals++;
           } catch (error) {
@@ -214,29 +236,51 @@ export class AgentRuntime {
     this.store.set('agentShadowPending', pending);
   }
 
+  /** Every valid persona proposal is tracked to expiry for per-analyst accountability. */
+  private trackPersona(proposal: AgentProposal, markAt: number) {
+    if (proposal.direction === 'flat') return; // flat votes carry no gradeable direction
+    const pending = (this.store.get('agentPersonaPending') ?? []) as PendingShadow[];
+    pending.push({ id: proposal.id, agentId: proposal.agentId, symbol: proposal.symbol,
+      direction: proposal.direction, confidence: proposal.confidence, markAt,
+      rationale: proposal.rationale, createdAt: proposal.createdAt,
+      expiresAtMs: this.nowMs() + proposal.horizonSeconds * 1000 });
+    while (pending.length > 300) pending.shift();
+    this.store.set('agentPersonaPending', pending);
+  }
+
+  /** Grade every expired shadow — ensemble AND per-persona — against the fresh mark.
+   *  No fresh mark for a symbol: the opinion stays open and retries next tick. */
   private expireShadows(): number {
-    const pending = (this.store.get('agentShadowPending') ?? []) as PendingShadow[];
-    if (!pending.length) return 0;
     const nowMs = this.nowMs();
-    const due = pending.filter(p => p.expiresAtMs <= nowMs);
-    if (!due.length) return 0;
     const marks = new Map(this.context().map(m => [m.symbol, m.mark]));
+    let closed = 0;
+    closed += this.expireList('agentShadowPending', 'agent-ensemble', marks, nowMs);
+    closed += this.expireList('agentPersonaPending', undefined, marks, nowMs);
+    return closed;
+  }
+
+  /** Grade one pending list. `fixedBotId` set = ensemble list (all outcomes under
+   *  agent-ensemble); undefined = per-persona list (each outcome under its own agentId). */
+  private expireList(storeKey: string, fixedBotId: string | undefined, marks: Map<string, number>, nowMs: number): number {
+    const pending = (this.store.get(storeKey) ?? []) as PendingShadow[];
+    if (!pending.length) return 0;
     const remaining = pending.filter(p => {
       if (p.expiresAtMs > nowMs) return true;
       const markNow = marks.get(p.symbol);
       if (markNow === undefined) return true; // no fresh mark yet: retry next tick
+      const botId = fixedBotId ?? p.agentId;
       const signed = p.direction === 'long' ? 1 : -1;
       const movePct = signed * (markNow - p.markAt) / p.markAt * 100;
       this.journal.record({
-        time: new Date(nowMs).toISOString(), botId: 'agent-ensemble', strategyId: 'agent-llm', symbol: p.symbol,
+        time: new Date(nowMs).toISOString(), botId, strategyId: 'agent-llm', symbol: p.symbol,
         decision: 'agent-outcome',
         rationale: `${p.direction} ${p.symbol}: mark ${p.markAt.toFixed(2)} -> ${markNow.toFixed(2)} (${movePct >= 0 ? '+' : ''}${movePct.toFixed(3)}%) => ${movePct > 0 ? 'direction correct' : movePct < 0 ? 'direction wrong' : 'flat'} (shadow, no orders)`.slice(0, 500),
-        inputs: { markAt: p.markAt, markAtExpiry: markNow, direction: p.direction, confidence: p.confidence, agents: p.agentId },
+        inputs: { markAt: p.markAt, markAtExpiry: markNow, direction: p.direction, confidence: p.confidence, agents: p.agentId, grade: movePct > 0 ? 'correct' : movePct < 0 ? 'wrong' : 'flat' },
         riskChecks: [{ check: 'shadow-mode', pass: true, detail: 'no orders; journal-only' }],
       });
       return false;
     });
-    this.store.set('agentShadowPending', remaining);
+    this.store.set(storeKey, remaining);
     return pending.length - remaining.length;
   }
 
