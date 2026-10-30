@@ -61,6 +61,14 @@ Set-Content -NoNewline -Path .env -Value "GEMINI_API_KEY=AIza...your-key..."
    status: GET /api/agents; manual cycle: POST /api/agents/tick. Daily model
    request cap 500 (hard stop, journaled once); a missing key degrades to idle
    agents. Promotion to live paper execution remains an explicit future gate.
+- **Dashboard — SHIPPED 2026-10-30.** The "AI agents" tab in the web UI shows
+  the three personas' latest votes with confidence bars, their full rationale
+  (the thought process), the ensemble quorum (2-of-3 dots) with any dissent or
+  veto, the graded shadow-outcome ledger (correct vs wrong at expiry), and the
+  complete thought-process timeline. Backed by GET /api/agents/activity
+  (runtime status + the agent-memory journal). Enable/disable and a manual
+  cycle sit right on the page. Read-only for the record plus the two session
+  switches — nothing here executes orders.
 4. **Risk reviewer** — an agent that reads the journal and flags risk-off
    conditions to the operator; it can only suggest, and the fixed risk check can
    still veto everything.

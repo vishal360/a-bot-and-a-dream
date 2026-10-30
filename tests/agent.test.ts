@@ -136,3 +136,19 @@ test('extractProposalJson strips fences and fails closed on junk', () => {
   expect(() => extractProposalJson('I think the market will go up')).toThrow('no JSON');
   expect(() => extractProposalJson('{"direction":"sideways"}')).toThrow('direction');
 });
+
+test('activity feed returns runtime status plus the agent-memory journal', async () => {
+  const { s, runtime, close } = harness(() => contract());
+  try {
+    runtime.enable({ confirm: 'ENABLE AGENT SHADOW' });
+    await runtime.tick();
+    const activity = runtime.activity();
+    expect(activity.status.enabled).toBe(true);
+    expect(activity.entries.length).toBeGreaterThanOrEqual(4); // 3 persona votes + 1 ensemble entry
+    expect(activity.entries.every((e: any) => e.bot_id.startsWith('agent-'))).toBe(true);
+    expect(activity.entries.map((e: any) => e.decision)).toContain('agent-proposal');
+    const ensemble = activity.entries.find((e: any) => e.bot_id === 'agent-ensemble' && e.decision === 'agent-proposal');
+    expect(ensemble.inputs.direction).toBe('long');
+    expect(ensemble.inputs.agreeing).toContain('agent-gemini-momentum');
+  } finally { s.db.close(); }
+});

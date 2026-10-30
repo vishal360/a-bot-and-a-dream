@@ -1,0 +1,45 @@
+/* Agents dashboard — the three analysts, their votes, reasoning and the veto trail.
+   Extends the fleet design system; the root reuses .fleet-console for shared styles. */
+
+.agents-console .agents-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin-top:14px}
+.agents-console .agent-card{margin:0}
+.agents-console .agent-card .row{align-items:baseline;justify-content:space-between;margin-bottom:6px}
+.agents-console .agent-card strong{color:#dfe9f6}
+.agents-console .muted.small{font-size:10px;color:#7588a2;margin:2px 0 8px}
+
+.agents-console .vote-chip,.agents-console .badge{transition:box-shadow .2s ease}
+.agents-console .conf-track{height:5px;border-radius:3px;background:#1a2636;border:1px solid #223146;overflow:hidden;margin:8px 0 10px}
+.agents-console .conf-fill{height:100%;background:linear-gradient(90deg,#2ea88c,#40e4be);border-radius:3px;transition:width .5s ease}
+
+.agents-console .rationale{
+  font-size:12px;line-height:1.55;color:#c3d0e0;
+  border-left:2px solid #2d4058;padding:6px 10px;margin:8px 0;background:rgba(18,32,49,.5);
+  border-radius:0 6px 6px 0;min-height:44px;
+}
+.agents-console .rationale .red{color:#ff8393}
+.agents-console .agent-meta{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap}
+.agents-console .agent-meta small{font-size:9px;color:#71839c;letter-spacing:.3px}
+
+/* Quorum visual: three analyst dots, filled = agreeing */
+.agents-console .quorum-row{display:flex;align-items:center;gap:18px;margin:14px 0}
+.agents-console .quorum-visual{display:flex;align-items:center;gap:8px}
+.agents-console .quorum-dot{
+  width:16px;height:16px;border-radius:50%;border:2px solid #3a4d66;background:transparent;
+  transition:all .3s ease;
+}
+.agents-console .quorum-dot.filled{background:#40e4be;border-color:#40e4be;box-shadow:0 0 12px rgba(64,228,190,.45)}
+.agents-console .quorum-visual strong{font-family:Consolas,monospace;font-size:20px;color:#dfe9f6;margin-left:4px}
+
+.agents-console .veto-box{
+  border:1px solid #72603a;background:rgba(215,183,110,.06);border-radius:8px;
+  padding:10px 14px;margin:10px 0;font-size:12px;color:#d7b76e;
+}
+.agents-console .veto-box strong{color:#d7b76e;letter-spacing:.5px}
+
+.agents-console .row.wrap{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.agents-console .thought{max-width:520px;line-height:1.5}
+.agents-console .outcome-row{background:rgba(64,228,190,.03)}
+.agents-console .warnings{margin-top:10px}
+.agents-console .warnings p{color:#d7b76e;font-size:11px}
+
+@media(max-width:1100px){.agents-console .agents-grid{grid-template-columns:1fr}}

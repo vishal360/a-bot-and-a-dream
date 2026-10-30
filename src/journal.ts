@@ -62,6 +62,14 @@ export class DecisionJournal {
       : this.store.db.query('SELECT * FROM decision_journal ORDER BY id DESC LIMIT ?').all(limit);
     return (rows as any[]).map(r => ({ ...r, inputs: r.inputs ? JSON.parse(r.inputs) : null, risk_checks: r.risk_checks ? JSON.parse(r.risk_checks) : null }));
   }
+  /** Agent-memory queries: every journal row for bot ids starting with the prefix
+   *  (e.g. 'agent-' matches agent-gemini-* and agent-ensemble). Validated prefix,
+   *  bounded limit; feeds GET /api/agents/activity. */
+  listByBotPrefix(prefix: string, limit: number) {
+    if (!/^[a-z0-9-]{3,30}$/.test(prefix)) throw new Error('Invalid journal bot prefix');
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid journal query limit');
+    return (this.store.db.query('SELECT * FROM decision_journal WHERE bot_id LIKE ? ORDER BY id DESC LIMIT ?').all(prefix + '%', limit) as any[]).map(r => ({ ...r, inputs: r.inputs ? JSON.parse(r.inputs) : null, risk_checks: r.risk_checks ? JSON.parse(r.risk_checks) : null }));
+  }
   count(botId: string, sinceIso: string) {
     if (!ID.test(botId) || !(Date.parse(sinceIso))) throw new Error('Invalid journal count query');
     return (this.store.db.query("SELECT COUNT(*) AS n FROM decision_journal WHERE bot_id=? AND decision IN ('submit','fill','partial') AND time>=?").get(botId, sinceIso) as any).n;

@@ -92,6 +92,12 @@ export class AgentRuntime {
     return this.status();
   }
 
+  /** Dashboard feed (GET /api/agents/activity): runtime status + the agent-memory
+   *  journal (every proposal, rejection, ensemble decision and graded outcome). */
+  activity(limit = 150) {
+    return { status: this.status(), entries: this.journal.listByBotPrefix('agent-', limit) };
+  }
+
   status() {
     const pending = (this.store.get('agentShadowPending') ?? []) as PendingShadow[];
     return {
@@ -134,7 +140,7 @@ export class AgentRuntime {
             this.journal.record({
               time: new Date(this.nowMs()).toISOString(), botId: agent.agentId, strategyId: 'agent-llm', symbol: market.symbol,
               decision: 'agent-proposal', rationale: `${proposal.direction} @ conf ${proposal.confidence.toFixed(2)}; horizon ${proposal.horizonSeconds}s; ${proposal.rationale}`.slice(0, 500),
-              inputs: { expiresAt: proposal.expiresAt, mark: market.mark, model: agent.model },
+              inputs: { direction: proposal.direction, confidence: proposal.confidence, horizonSeconds: proposal.horizonSeconds, expiresAt: proposal.expiresAt, mark: market.mark, model: agent.model },
               riskChecks: [{ check: 'shadow-mode', pass: true, detail: 'no orders; journal-only' }],
             });
             valid.push(proposal);
@@ -156,7 +162,7 @@ export class AgentRuntime {
             time: new Date(this.nowMs()).toISOString(), botId: 'agent-ensemble', strategyId: 'agent-llm', symbol: market.symbol,
             decision: 'agent-proposal',
             rationale: `ensemble ${ensemble.direction} @ conf ${ensemble.confidence.toFixed(2)} (${ensemble.agreeing.join(' + ')}; dissent: ${ensemble.dissenting.join(', ') || 'none'}); shadow only`.slice(0, 500),
-            inputs: { mark: market.mark, agreeing: ensemble.agreeing.join(', '), dissenting: ensemble.dissenting.join(', ') },
+            inputs: { direction: ensemble.direction, confidence: ensemble.confidence, mark: market.mark, agreeing: ensemble.agreeing.join(', '), dissenting: ensemble.dissenting.join(', ') },
             riskChecks: [
               { check: 'shadow-mode', pass: true, detail: 'no orders; journal-only' },
               { check: 'ensemble-quorum', pass: true, detail: `${ensemble.agreeing.length}-of-${this.agents.length}` },

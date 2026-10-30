@@ -173,6 +173,7 @@ const server = Bun.serve({
         if (url.pathname === '/api/fleet/journal') return json({ entries: journal.list({ botId: url.searchParams.get('botId') ?? undefined, limit: Number(url.searchParams.get('limit') ?? 200) }) });
         if (url.pathname === '/api/archive') return json(archive ? archive.status() : { enabled: false });
         if (url.pathname === '/api/agents') return json(agents.status());
+        if (url.pathname === '/api/agents/activity') return json(agents.activity(Number(url.searchParams.get('limit') ?? 150)));
         if (url.pathname === '/api/feeds/lighter/trades') {
           const marketId = url.searchParams.get('marketId');
           if (!marketId || !/^\d{1,10}$/.test(marketId)) throw new Error('Valid marketId required');
