@@ -30,6 +30,7 @@ future project.
 | **Historical backfill + walk-forward screen (research lane v3)** | src/backtest-klines.ts + src/walkforward.ts + scripts/download-history.ts + scripts/research-walkforward.ts | Public 1s klines (no key) screen candidates: SPA on train, untouched holdout decides; can NEVER promote (Lighter-capture-only by design) |
 | **Agent proposal contracts + shadow mode** | src/agent-contract.ts + src/agent-ensemble.ts + src/agent-runtime.ts | 2-of-3 personas, expiring contracts, session-only shadow latch, 500/day model cap, journaled outcomes; journal-only, never executes orders |
 | **Agents dashboard (votes, reasoning, veto trail)** | src/web/AgentsConsole.tsx + GET /api/agents/activity | Live view: persona votes + confidence bars, full rationale, 2-of-3 quorum + dissent/veto, graded shadow outcomes, complete thought-process timeline |
+| **Agent ops: Telegram alerting + persona model fallback + shadow persistence** | src/alerts.ts + agent-runtime.ts | Dark-persona detection (reject streaks), model chains per persona, opt-in shadow persistence across restarts; fail-closed without .env config |
 
 ## In progress
 

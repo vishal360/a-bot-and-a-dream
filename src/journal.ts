@@ -70,6 +70,15 @@ export class DecisionJournal {
     if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid journal query limit');
     return (this.store.db.query('SELECT * FROM decision_journal WHERE bot_id LIKE ? ORDER BY id DESC LIMIT ?').all(prefix + '%', limit) as any[]).map(r => ({ ...r, inputs: r.inputs ? JSON.parse(r.inputs) : null, risk_checks: r.risk_checks ? JSON.parse(r.risk_checks) : null }));
   }
+  lastId(): number {
+    return (this.store.db.query('SELECT COALESCE(MAX(id),0) AS id FROM decision_journal').get() as any).id;
+  }
+  /** Entries after a journal id (ascending) — the alerting cursor. */
+  listSinceId(afterId: number, limit: number) {
+    if (!Number.isSafeInteger(afterId) || afterId < 0) throw new Error('Invalid journal cursor');
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid journal query limit');
+    return (this.store.db.query('SELECT * FROM decision_journal WHERE id > ? ORDER BY id ASC LIMIT ?').all(afterId, limit) as any[]).map(r => ({ ...r, inputs: r.inputs ? JSON.parse(r.inputs) : null, risk_checks: r.risk_checks ? JSON.parse(r.risk_checks) : null }));
+  }
   count(botId: string, sinceIso: string) {
     if (!ID.test(botId) || !(Date.parse(sinceIso))) throw new Error('Invalid journal count query');
     return (this.store.db.query("SELECT COUNT(*) AS n FROM decision_journal WHERE bot_id=? AND decision IN ('submit','fill','partial') AND time>=?").get(botId, sinceIso) as any).n;

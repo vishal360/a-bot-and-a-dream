@@ -20,6 +20,7 @@ import { framesFromCapture, replayStrategy } from './backtest-replay';
 import { loadPromotionGate } from './promotion';
 import { DataEngine } from './data-engine';
 import { AgentRuntime } from './agent-runtime';
+import { TelegramAlerter } from './alerts';
 mkdirSync('data', { recursive: true });
 const store = new Store('data/terminal.sqlite');
 const operations = new Operations(store, new Vault('data/vault.key'));
@@ -52,8 +53,8 @@ setInterval(() => void markets.refresh(), 10000);
 // Synthetic fills remain a legacy demo only; never advance them as market data.
 // A restart never silently resumes runners, even though the emergency latch persists.
 store.set('bots', store.get('bots').map((b: any) => ({ ...b, status: store.get('halted') ? 'halted' : 'paused' })));
-// Agents share the fleet's restart rule: automation authorization never survives a restart.
-if (store.get('agentEnabled')) { store.set('agentEnabled', false); store.audit('AGENT_AUTOMATION_OFF', 'Restart cleared agent automation authorization'); }
+// Shadow persistence is handled by the AgentRuntime constructor (opt-in via
+// enable({ persist: true }) — journal-only, no orders; execution latches stay session-only).
 const agents = new AgentRuntime(store, journal, () => {
   try {
     const feedStatus = feed.status();
@@ -70,6 +71,8 @@ const agents = new AgentRuntime(store, journal, () => {
 }, fetch);
 // Context comes from the feed's OWN watched books (not the venue-wide market list).
 agents.start();
+const alerter = new TelegramAlerter(store, journal, fetch);
+alerter.start();
 store.audit('SERVER_START', 'Local paper control plane; all runners paused or halted.');
 const port = Number(process.env.PORT || 3000), origin = `http://127.0.0.1:${port}`;
 const dist = resolve('dist');
@@ -134,6 +137,7 @@ const server = Bun.serve({
           else if (url.pathname === '/api/agents/enable') return json(agents.enable(body));
         else if (url.pathname === '/api/agents/disable') return json(agents.disable());
         else if (url.pathname === '/api/agents/tick') return json(await agents.tick());
+        else if (url.pathname === '/api/alerts/test') return json(await alerter.test());
         else if (url.pathname === '/api/fleet/enable') return json(fleet.enable(body));
           else if (url.pathname === '/api/fleet/disable') return json(fleet.disable());
           else if (url.pathname === '/api/fleet/create') return json(fleet.create(body));
@@ -174,6 +178,7 @@ const server = Bun.serve({
         if (url.pathname === '/api/archive') return json(archive ? archive.status() : { enabled: false });
         if (url.pathname === '/api/agents') return json(agents.status());
         if (url.pathname === '/api/agents/activity') return json(agents.activity(Number(url.searchParams.get('limit') ?? 150)));
+        if (url.pathname === '/api/alerts') return json(alerter.status());
         if (url.pathname === '/api/feeds/lighter/trades') {
           const marketId = url.searchParams.get('marketId');
           if (!marketId || !/^\d{1,10}$/.test(marketId)) throw new Error('Valid marketId required');

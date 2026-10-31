@@ -7,14 +7,14 @@ export type AgentMarketContext = {
   symbol: string; mark: number; fundingRate: number | null; equity: number | null; time: string;
 };
 export type AgentContextProvider = () => AgentMarketContext[];
-export type AgentPersona = { agentId: string; model: string; persona: string };
+export type AgentPersona = { agentId: string; model: string; persona: string; fallbackModels?: string[] };
 
 /** The locked agent roster: three independent proposal sources for the 2-of-3 ensemble.
  *  Deliberately cheap models on the free tier; the personas disagree by construction. */
 export const DEFAULT_AGENTS: AgentPersona[] = [
-  { agentId: 'agent-gemini-momentum', model: 'gemini-3.8-flash', persona: 'You are a short-horizon momentum analyst for crypto perpetuals. You favor continuation of the recent move when the data supports it.' },
-  { agentId: 'agent-gemini-skeptic', model: 'gemini-3.5-flash-lite', persona: 'You are a conservative risk analyst. You distrust continuation, look for exhaustion, and prefer flat unless the evidence is strong.' },
-  { agentId: 'agent-gemini-flow', model: 'gemini-3.5-flash-lite', persona: 'You are a market-microstructure analyst focused on funding, mark vs index relationships and short-term flow.' },
+  { agentId: 'agent-gemini-momentum', model: 'gemini-3.8-flash', fallbackModels: ['gemini-3.5-flash-lite'], persona: 'You are a short-horizon momentum analyst for crypto perpetuals. You favor continuation of the recent move when the data supports it.' },
+  { agentId: 'agent-gemini-skeptic', model: 'gemini-3.5-flash-lite', fallbackModels: ['gemini-3.8-flash'], persona: 'You are a conservative risk analyst. You distrust continuation, look for exhaustion, and prefer flat unless the evidence is strong.' },
+  { agentId: 'agent-gemini-flow', model: 'gemini-3.5-flash-lite', fallbackModels: ['gemini-3.8-flash'], persona: 'You are a market-microstructure analyst focused on funding, mark vs index relationships and short-term flow.' },
 ];
 // Model roster current as of 2026-10-30: Google deprecated gemini-2.5-* for new keys
 // (HTTP 404 "no longer available to new users"); 3.8-flash occasionally 503s under load
@@ -88,8 +88,12 @@ export class AgentRuntime {
 
   enable(body: any) {
     if (!body || body.confirm !== 'ENABLE AGENT SHADOW') throw new Error('Type ENABLE AGENT SHADOW to confirm: agents propose in shadow mode only (no orders)');
+    const persist = body.persist === true;
     this.store.set('agentEnabled', true);
-    this.store.audit('AGENT_SHADOW_ON', 'Operator enabled agent shadow mode for this session; no orders, journal-only');
+    this.store.set('agentShadowPersist', persist);
+    this.store.audit('AGENT_SHADOW_ON', persist
+      ? 'Operator enabled agent shadow mode; PERSIST across restarts (journal-only, no orders)'
+      : 'Operator enabled agent shadow mode for this session; no orders, journal-only');
     return this.status();
   }
 
@@ -120,6 +124,7 @@ export class AgentRuntime {
     const personas = (this.store.get('agentPersonaPending') ?? []) as PendingShadow[];
     return {
       enabled: !!this.store.get('agentEnabled'),
+      shadowPersist: this.store.get('agentShadowPersist') === true,
       apiKeyPresent: !!this.apiKey(),
       models: this.agents.map(a => ({ agentId: a.agentId, model: a.model })),
       requests: { day: this.dayKey(), used: this.requestsUsed(), cap: this.cap },
@@ -155,13 +160,13 @@ export class AgentRuntime {
         for (const agent of this.agents) {
           if (this.requestsUsed() >= this.cap) { this.journalCap(this.requestsUsed()); return this.finish(proposals, rejections, shadowsOpened, shadowsClosed); }
           try {
-            const text = await this.askModel(agent, market, key);
+            const { text, model: usedModel } = await this.askModel(agent, market, key);
             const fields = extractProposalJson(text);
             const proposal = buildProposal(fields, { id: crypto.randomUUID(), agentId: agent.agentId, symbol: market.symbol }, this.nowMs());
             this.journal.record({
               time: new Date(this.nowMs()).toISOString(), botId: agent.agentId, strategyId: 'agent-llm', symbol: market.symbol,
               decision: 'agent-proposal', rationale: `${proposal.direction} @ conf ${proposal.confidence.toFixed(2)}; horizon ${proposal.horizonSeconds}s; ${proposal.rationale}`.slice(0, 500),
-              inputs: { direction: proposal.direction, confidence: proposal.confidence, horizonSeconds: proposal.horizonSeconds, expiresAt: proposal.expiresAt, mark: market.mark, model: agent.model },
+              inputs: { direction: proposal.direction, confidence: proposal.confidence, horizonSeconds: proposal.horizonSeconds, expiresAt: proposal.expiresAt, mark: market.mark, model: usedModel },
               riskChecks: [{ check: 'shadow-mode', pass: true, detail: 'no orders; journal-only' }],
             });
             this.trackPersona(proposal, market.mark);
@@ -284,27 +289,41 @@ export class AgentRuntime {
     return pending.length - remaining.length;
   }
 
-  private async askModel(agent: AgentPersona, market: AgentMarketContext, key: string): Promise<string> {
+  /** Ask one persona for a proposal, walking its model chain when a model is
+   *  unavailable (404) or overloaded (429/503). Returns the response text AND the
+   *  model that actually served it — the journal records the truth, not the plan. */
+  private async askModel(agent: AgentPersona, market: AgentMarketContext, key: string): Promise<{ text: string; model: string }> {
     const context = { symbol: market.symbol, mark: market.mark, fundingRate: market.fundingRate, accountEquity: market.equity, time: market.time };
     const prompt = `${agent.persona}\n\nCurrent market context (JSON):\n${JSON.stringify(context)}\n\n` +
       'Respond with ONLY a JSON object, no markdown fences, exactly this shape:\n' +
       '{"direction":"long"|"short"|"flat","confidence":0.0,"horizonSeconds":900,"rationale":"max 300 chars"}\n' +
       'direction is your opinion for the NEXT horizonSeconds (300..3600). confidence 0..1. You may answer flat.';
-    let response: Response;
-    for (let attempt = 1; ; attempt++) {
-      response = await this.geminiFetch(`https://generativelanguage.googleapis.com/v1beta/models/${agent.model}:generateContent`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
-        body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.7, maxOutputTokens: 512 } }),
-        signal: AbortSignal.timeout(this.options.requestTimeoutMs ?? 30000),
-      });
-      if (response.ok) break;
-      if ((response.status === 429 || response.status === 503) && attempt < 3) { await new Promise(r => setTimeout(r, 2000 * attempt)); continue; }
-      throw new Error(`model HTTP ${response.status}`);
+    const models = [agent.model, ...(agent.fallbackModels ?? [])];
+    let lastError: Error = new Error('no model configured');
+    for (const model of models) {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          const response = await this.geminiFetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+            body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.7, maxOutputTokens: 512 } }),
+            signal: AbortSignal.timeout(this.options.requestTimeoutMs ?? 30000),
+          });
+          if (response.ok) {
+            const body = await response.json() as any;
+            const text = body?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join('') ?? '';
+            return { text: String(text), model };
+          }
+          if ((response.status === 429 || response.status === 503) && attempt < 3) { await new Promise(r => setTimeout(r, 2000 * attempt)); continue; }
+          lastError = new Error(`model ${model} HTTP ${response.status}`);
+          break; // this model is unavailable: fall through to the next in the chain
+        } catch (error) {
+          lastError = error as Error;
+          break; // network/abort on this model: the chain ends here this cycle
+        }
+      }
     }
-    const body = await response.json() as any;
-    const text = body?.candidates?.[0]?.content?.parts?.map((p: any) => p.text).join('') ?? '';
-    return String(text);
+    throw lastError;
   }
 }
 

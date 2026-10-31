@@ -47,8 +47,13 @@ const pct = (v: number) => `${v >= 0 ? '+' : ''}${v.toFixed(2)}%`;
 
 export default function AgentsConsole() {
   const [data, setData] = useState<Activity | null>(null);
+  const [alerts, setAlerts] = useState<{ configured: boolean; sent: number } | null>(null);
   const [error, setError] = useState(''), [notice, setNotice] = useState(''), [busy, setBusy] = useState(false);
-  const refresh = async () => { const r = await fetch('/api/agents/activity'); if (!r.ok) throw new Error('Unable to read agent activity'); setData(await r.json()); };
+  const [persistNext, setPersistNext] = useState(false);
+  const refresh = async () => {
+    const r = await fetch('/api/agents/activity'); if (!r.ok) throw new Error('Unable to read agent activity'); setData(await r.json());
+    fetch('/api/alerts').then(x => x.json()).then(setAlerts).catch(() => {});
+  };
   useEffect(() => {
     refresh().catch(e => setError(e.message));
     const timer = setInterval(() => refresh().catch(e => setError(e.message)), 5000);
@@ -192,9 +197,10 @@ export default function AgentsConsole() {
           <button disabled={busy} onClick={() => act('agents/tick', {})}>▶ Run one cycle now</button>
           {enabled
             ? <button className="danger" disabled={busy} onClick={() => act('agents/disable', {})}>Disable shadow</button>
-            : <button className="primary" disabled={busy} onClick={() => act('agents/enable', { confirm: 'ENABLE AGENT SHADOW' })}>Enable shadow mode</button>}
+            : <button className="primary" disabled={busy} onClick={() => act('agents/enable', { confirm: 'ENABLE AGENT SHADOW', persist: persistNext })}>Enable shadow mode</button>}
         </div>
-        <p className="muted small">Requests: {status.requests.used}/{status.requests.cap} today · cycle every {Math.round(status.intervalMs / 1000)}s · key {status.apiKeyPresent ? 'present' : 'MISSING'} · last cycle {timeAgo(status.lastTickAt)}</p>
+        {!enabled && <label className="muted small" style={{ display: 'block', marginTop: 6 }}><input type="checkbox" checked={persistNext} onChange={e => setPersistNext(e.target.checked)}/> resume shadow after restarts (persists the session latch; journal-only, no orders)</label>}
+        <p className="muted small">Requests: {status.requests.used}/{status.requests.cap} today · cycle every {Math.round(status.intervalMs / 1000)}s · key {status.apiKeyPresent ? 'present' : 'MISSING'} · last cycle {timeAgo(status.lastTickAt)} · Telegram: {alerts === null ? '…' : alerts.configured ? `on · ${alerts.sent} sent` : 'not configured (.env: TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID)'} {alerts?.configured && <button disabled={busy} style={{ marginLeft: 6 }} onClick={() => act('alerts/test', {})}>Send test alert</button>}</p>
         {!!status.failures.length && <div className="warnings">{status.failures.map((f, i) => <p key={i}>⚠ {f}</p>)}</div>}
       </section>
     </div>

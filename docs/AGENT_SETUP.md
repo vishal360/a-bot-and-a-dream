@@ -69,6 +69,18 @@ Set-Content -NoNewline -Path .env -Value "GEMINI_API_KEY=AIza...your-key..."
   (runtime status + the agent-memory journal). Enable/disable and a manual
   cycle sit right on the page. Read-only for the record plus the two session
   switches — nothing here executes orders.
+- **Telegram alerting + persona resilience — SHIPPED 2026-10-31.**
+  src/alerts.ts (TelegramAlerter) pushes journal events to Telegram: graded
+  agent outcomes, feed-guard transitions, bot pauses/halts, the daily-cap
+  wall, and a "persona may be dark" warning after 5 consecutive rejected
+  proposals (the exact silent failure that killed two personas for two days).
+  Config: TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env (missing = idle,
+  fail-closed); GET /api/alerts status; POST /api/alerts/test sends a test.
+  Persona model fallback: each persona walks a model chain (3.8-flash ->
+  3.5-flash-lite and back) when its primary 404s/503s/429s — the journal
+  records the model that ACTUALLY served. Shadow persistence: enable
+  {confirm, persist: true} survives restarts (audited AGENT_SHADOW_RESUMED);
+  the default stays session-only. Executing latches remain session-only.
 4. **Risk reviewer** — an agent that reads the journal and flags risk-off
    conditions to the operator; it can only suggest, and the fixed risk check can
    still veto everything.
