@@ -8,7 +8,7 @@ export type TelegramAlerterOptions = {
   maxPerTick?: number;
 };
 
-const DEFAULT_KINDS = ['agent-outcome', 'guard-pause', 'guard-resume', 'bot-pause', 'bot-halt'];
+const DEFAULT_KINDS = ['agent-outcome', 'agent-order', 'health-alert', 'guard-pause', 'guard-resume', 'bot-pause', 'bot-halt'];
 
 /** Telegram alerting (docs/AGENT_SETUP.md): pushes noteworthy journal events to the
  *  operator's phone — graded agent outcomes, feed-guard transitions, bot pauses, the

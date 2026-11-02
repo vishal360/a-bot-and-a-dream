@@ -21,6 +21,8 @@ import { loadPromotionGate } from './promotion';
 import { DataEngine } from './data-engine';
 import { AgentRuntime } from './agent-runtime';
 import { TelegramAlerter } from './alerts';
+import { HealthMonitor } from './health';
+import { DbBackup } from './backup';
 mkdirSync('data', { recursive: true });
 const store = new Store('data/terminal.sqlite');
 const operations = new Operations(store, new Vault('data/vault.key'));
@@ -73,6 +75,11 @@ const agents = new AgentRuntime(store, journal, () => {
 agents.start();
 const alerter = new TelegramAlerter(store, journal, fetch);
 alerter.start();
+// Vault-health watchdog + evidence-database snapshots (docs/DATA_ENGINE.md).
+const health = new HealthMonitor(store, journal, { feedStatus: () => feed.status() });
+health.start();
+const dbBackup = new DbBackup(store, journal);
+dbBackup.start();
 store.audit('SERVER_START', 'Local paper control plane; all runners paused or halted.');
 const port = Number(process.env.PORT || 3000), origin = `http://127.0.0.1:${port}`;
 const dist = resolve('dist');
@@ -179,6 +186,7 @@ const server = Bun.serve({
         if (url.pathname === '/api/agents') return json(agents.status());
         if (url.pathname === '/api/agents/activity') return json(agents.activity(Number(url.searchParams.get('limit') ?? 150)));
         if (url.pathname === '/api/alerts') return json(alerter.status());
+
         if (url.pathname === '/api/feeds/lighter/trades') {
           const marketId = url.searchParams.get('marketId');
           if (!marketId || !/^\d{1,10}$/.test(marketId)) throw new Error('Valid marketId required');
@@ -197,7 +205,7 @@ const server = Bun.serve({
         if (url.pathname === '/api/stats/archive') return json(operations.archive(url.searchParams.get('id') || ''));
         if (url.pathname === '/api/markets') return json(markets.state);
         if (url.pathname === '/api/lighter') return json({ config: operations.lighterConfig(), account: store.get('lighterAccount') });
-        if (url.pathname === '/api/health') return json({ status: 'ok', liveTrading: false, brokerConnected: false });
+        if (url.pathname === '/api/health') return json({ status: 'ok', liveTrading: false, brokerConnected: false, vault: health.status(), backup: dbBackup.status() });
         return json({ error: 'Unknown endpoint' }, 404);
       }
       if (!['GET', 'HEAD'].includes(req.method)) return json({ error: 'Method not allowed' }, 405);

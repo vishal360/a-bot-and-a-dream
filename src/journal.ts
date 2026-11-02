@@ -4,7 +4,7 @@ export type DecisionKind =
   | 'bot-create' | 'bot-update' | 'bot-delete' | 'bot-start' | 'bot-pause' | 'bot-halt'
   | 'propose' | 'skip' | 'submit' | 'fill' | 'partial' | 'reject'
   | 'guard-pause' | 'guard-resume' | 'automation-enable' | 'automation-disable'
-  | 'agent-proposal' | 'agent-reject' | 'agent-outcome';
+  | 'agent-proposal' | 'agent-reject' | 'agent-outcome' | 'agent-order' | 'health-alert';
 export type RiskCheck = { check: string; pass: boolean; detail?: string };
 export type DecisionInput = Record<string, number | string | boolean | null>;
 
@@ -20,7 +20,7 @@ const ID = /^[a-z0-9-]{3,40}$/;
 const STRATEGY = /^[a-z0-9-]{2,60}$/;
 const KINDS: DecisionKind[] = ['bot-create', 'bot-update', 'bot-delete', 'bot-start', 'bot-pause', 'bot-halt',
   'propose', 'skip', 'submit', 'fill', 'partial', 'reject', 'guard-pause', 'guard-resume', 'automation-enable', 'automation-disable',
-  'agent-proposal', 'agent-reject', 'agent-outcome'];
+  'agent-proposal', 'agent-reject', 'agent-outcome', 'agent-order', 'health-alert'];
 const bounded = (value: unknown, max: number) => typeof value === 'string' && value.length <= max ? value : null;
 
 /** Append-only bounded log of every automated decision, its inputs and its risk checks.
