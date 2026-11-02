@@ -20,6 +20,7 @@ import { StrategyRegistry } from '../src/strategies/registry';
 import { validateParams } from '../src/strategies/types';
 import { configId } from '../src/promotion';
 import { splitWalkForward, walkForwardVerdict } from '../src/walkforward';
+import { assessDayQuality } from '../src/backfill-quality';
 
 const root = resolve(import.meta.dir, '..');
 const args = process.argv.slice(2);
@@ -54,10 +55,30 @@ const notional = num('notional', Math.min(1000, capital - 1));
 
 const dayFiles = readdirSync(historyDir).filter(f => /^\d{4}-\d{2}-\d{2}\.jsonl$/.test(f)).sort();
 if (dayFiles.length < 2) throw new Error('Need at least two day files in the history directory');
+const allowBadQuality = args.includes('--allow-bad-quality');
 const klines: Kline[] = [];
+const qualitySummary: Record<string, { verdict: string; problems: number }> = {};
+const badDays: string[] = [];
 for (const f of dayFiles) {
-  for (const line of readFileSync(join(historyDir, f), 'utf8').split(/\r?\n/).filter(Boolean)) klines.push(JSON.parse(line) as Kline);
+  const dayKlines: Kline[] = [];
+  for (const line of readFileSync(join(historyDir, f), 'utf8').split(/\r?\n/).filter(Boolean)) dayKlines.push(JSON.parse(line) as Kline);
+  // Fail-closed quality gate: every day is RE-ASSESSED from the data itself (a stale or
+  // missing quality file cannot sneak a bad day through), and a recorded 'bad' verdict
+  // file stands even if the re-assessment would pass (recorded badness is not forgiven).
+  const quality = assessDayQuality(dayKlines, f.replace('.jsonl', ''));
+  const recordedPath = join(historyDir, 'quality', f.replace('.jsonl', '.json'));
+  if (existsSync(recordedPath)) {
+    const recorded = JSON.parse(readFileSync(recordedPath, 'utf8'));
+    if (recorded.verdict === 'bad') quality.verdict = 'bad';
+  }
+  qualitySummary[quality.day] = { verdict: quality.verdict, problems: quality.problems.length };
+  if (quality.verdict === 'bad') badDays.push(`${quality.day}: ${quality.problems.slice(0, 3).map(p => p.detail).join('; ') || 'verdict bad'}`);
+  klines.push(...dayKlines);
 }
+if (badDays.length && !allowBadQuality) {
+  throw new Error(`Refusing to grade: ${badDays.length} day file(s) failed the quality gate (${badDays.slice(0, 2).join(' | ')}). Remove or re-download them, or pass --allow-bad-quality to proceed with the refusals recorded in the report.`);
+}
+const degradedDays = Object.entries(qualitySummary).filter(([, q]) => q.verdict === 'degraded').map(([d]) => d);
 const funding = existsSync(join(historyDir, 'funding.jsonl'))
   ? readFileSync(join(historyDir, 'funding.jsonl'), 'utf8').split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line) as { time: number; rate: number })
   : [];
@@ -73,6 +94,20 @@ if (configsPath) {
     return { strategyId: entry.strategyId, params: entry.params ?? {} } as Candidate;
   });
 }
+// Multiplicity accounting (docs/HISTORY_BACKFILL.md): the SPA input must count EVERY
+// configuration the sweep tried, not just the interesting survivors. --attempts takes
+// a JSONL file of {strategyId, params} lines exported by the sweep tool; that is the
+// honest way to grade a sweep. Without it, only the candidates listed here count.
+const attemptsFile = arg('attempts');
+if (attemptsFile) {
+  const lines = readFileSync(resolve(attemptsFile), 'utf8').split(/\r?\n/).filter(Boolean);
+  const attempts: Candidate[] = lines.map((line, idx) => {
+    const entry = JSON.parse(line);
+    if (!entry || typeof entry.strategyId !== 'string') throw new Error(`--attempts line ${idx + 1} needs a strategyId`);
+    return { strategyId: entry.strategyId, params: entry.params ?? {} } as Candidate;
+  });
+  candidates = attempts;
+}
 if (candidates.length < 2) throw new Error('The SPA screen needs at least 2 configurations to correct for multiplicity');
 const ids = candidates.map(candidate => configId(candidate.strategyId, candidate.params));
 if (new Set(ids).size !== ids.length) throw new Error('Duplicate configurations (same strategy and params)');
@@ -80,9 +115,10 @@ if (new Set(ids).size !== ids.length) throw new Error('Duplicate configurations 
 const { train, holdout } = splitWalkForward(klines, trainDays, holdoutDays);
 const source = `${meta.source ?? 'unknown'} ${meta.symbol ?? ''} ${meta.interval ?? ''}`.trim();
 
+const executionModel = arg('execution') === 'maker-conservative' ? 'maker-conservative' as const : 'taker' as const;
 const runLane = (series: Kline[]) => candidates.map(candidate => {
   const result = replayKlines({ registry, strategyId: candidate.strategyId, params: candidate.params,
-    klines: series, funding, symbol: market, capital, feeBps, notionalPerOrderUsd: notional, source });
+    klines: series, funding, symbol: market, capital, feeBps, notionalPerOrderUsd: notional, source, executionModel });
   return { candidate, id: configId(candidate.strategyId, candidate.params),
     resolvedParams: validateParams(registry.get(candidate.strategyId), candidate.params), result };
 });
@@ -121,6 +157,9 @@ const report = {
   generatedAt: new Date().toISOString(),
   history: { source, symbol: meta.symbol, interval: meta.interval, candles: klines.length, fundingEvents: funding.length },
   split: { trainDays, holdoutDays, trainCandles: train.length, holdoutCandles: holdout.length },
+  quality: { refusedDays: badDays.length, allowedBad: allowBadQuality && badDays.length > 0, degradedDays, badDays },
+  multiplicity: { candidates: candidates.length, attemptsFile: attemptsFile ?? null, note: 'The SPA screen corrects for exactly these candidates; grade sweeps with --attempts so every tried configuration counts.' },
+  execution: { model: executionModel, note: executionModel === 'maker-conservative' ? 'maker-conservative: strict trade-through fills, taker fees, TTL cancel with taker fallback on exits' : 'taker: next-open fills with spread' },
   screen: { alpha, reps, equityStep, trainSpaPvalue: trainVerdict.spa_pvalue, trainSurvivors, trainVerdict: trainVerdict.verdict, trainReasons: trainVerdict.reasons },
   holdout: holdoutResults.map(result => ({ id: result.id, strategyId: result.candidate.strategyId, netPnl: result.result.netPnl, trades: result.result.trades.length, fees: result.result.feesUsd, maxDrawdown: result.result.maxDrawdown })),
   verdict,

@@ -67,3 +67,24 @@ bun run scripts/research-walkforward.ts --history data/history/binance-spot-BTCU
   approximations when gaps exist.
 - Curve-fitting remains the enemy: the SPA screen and the untouched holdout are
   the defenses — never weaken either to force a pass.
+
+## Quality gates and multiplicity accounting (2026-11-02)
+
+- Every day written by `scripts/download-history.ts` gets a quality verdict file
+  (`quality/<day>.json` from `src/backfill-quality.ts`): duplicate timestamps are
+  instantly fatal, any hole over 1 hour is fatal, cumulative holes over 5 minutes
+  and zero-volume runs over 5 minutes degrade the day. A BAD day fails the
+  download itself unless `--allow-bad` is passed explicitly.
+- `scripts/research-walkforward.ts` re-assesses every day from the data itself
+  (a stale or missing quality file cannot sneak a bad day through) and a recorded
+  'bad' verdict stands even if re-assessment would pass. It refuses to grade
+  until bad days are removed or `--allow-bad-quality` is passed; refusals land
+  in the report.
+- Sweep grading is multiplicity-honest: pass `--attempts <file.jsonl>` (lines of
+  `{strategyId, params}` exported by the sweep) so the SPA input counts EVERY
+  configuration the sweep tried, not just the interesting survivors.
+- `--execution maker-conservative` grades under the maker fill model: limits at
+  the decision candle's close fill only on a strict trade-through by a LATER
+  candle (touch-equal does not fill, queue position is never assumed), fees stay
+  at the taker rate, unfilled limits cancel after the TTL and stale exits fall
+  back to a taker exit. The warning block and report record the model used.

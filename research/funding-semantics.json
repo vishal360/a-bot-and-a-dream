@@ -1,0 +1,31 @@
+{
+ "generatedAt": "2026-11-02T13:55:41.968Z",
+ "archiveRoot": "C:\\Users\\Awperation\\.cline\\data\\workspaces\\chat\\trading-terminal\\data\\archive",
+ "capturesRead": 187,
+ "capturesSkipped": 0,
+ "dayFolders": [
+  "2026-11-02"
+ ],
+ "note": "Observed funding semantics from OUR OWN captures. funding_timestamp-derived cadences are authoritative (the venue's schedule); rate-change-derived ones are an upper-bound inference and marked as such. This report never promotes anything.",
+ "markets": {
+  "BTC": {
+   "samples": 12654,
+   "distinctRates": 1,
+   "changes": 0,
+   "timestampIntervalsMs": [
+    36000000,
+    3599999,
+    3600001,
+    3600000
+   ],
+   "medianIntervalMs": 3600000.5,
+   "inferredCadenceHours": 1.0000001388888888,
+   "authoritative": true,
+   "daysObserved": [
+    "2026-11-02"
+   ],
+   "firstSample": "2026-11-02T00:00:33.762Z",
+   "lastSample": "2026-11-02T13:55:02.005Z"
+  }
+ }
+}

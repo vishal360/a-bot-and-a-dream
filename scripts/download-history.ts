@@ -18,6 +18,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import type { Kline } from '../src/backtest-klines';
+import { assessDayQuality } from '../src/backfill-quality';
 
 /** Parse and validate one raw kline row from the venue REST response. */
 export function parseKlineRow(row: unknown): Kline {
@@ -44,6 +45,7 @@ async function main() {
   const wantFunding = args.includes('--funding');
   const api = arg('api') ?? 'https://data-api.binance.vision';
   const fundingApi = 'https://fapi.binance.com';
+  const allowBad = args.includes('--allow-bad');
   if (!/^[A-Z0-9]{5,20}$/.test(symbol)) throw new Error('Invalid symbol');
   if (!['1s', '1m'].includes(interval)) throw new Error('Only 1s/1m intervals are supported');
   if (!Number.isInteger(days) || days < 1 || days > 365) throw new Error('--days must be 1..365');
@@ -97,7 +99,15 @@ async function main() {
       renameSync(tmp, file);
       totalCandles += klines.length;
       daysWritten++;
-      console.log(`${day}: ${klines.length} candles`);
+      // Quality gate (docs/HISTORY_BACKFILL.md): every written day gets a verdict file;
+      // a BAD day fails the download unless --allow-bad was passed (the verdict stays recorded).
+      const quality = assessDayQuality(klines, day);
+      mkdirSync(join(root, 'quality'), { recursive: true });
+      writeFileSync(join(root, 'quality', `${day}.json`), JSON.stringify(quality, null, 1) + '\n');
+      if (quality.verdict === 'bad' && !allowBad) {
+        throw new Error(`day ${day} failed the quality gate (${quality.problems.map(p => p.detail).join('; ')}). Re-download the day or pass --allow-bad to keep it with the verdict recorded.`);
+      }
+      console.log(`${day}: ${klines.length} candles [${quality.verdict}]`);
     }
     await sleep(150);
   }

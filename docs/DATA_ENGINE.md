@@ -56,3 +56,22 @@ range, state, frames, source bytes, archive bytes and archivedAt.
 - Configuration lives in `src/server.ts` where the engine is constructed
   (`keepDays`, `keepBytes`, `root`). No keys, no credentials, no signing: the
   engine only writes public market data this machine already received.
+
+## Health watchdog and database backups (2026-11-02)
+
+- `src/health.ts` (HealthMonitor) checks every 60s: disk free floor under the
+  archive, capture stall while the feed streams, Drive mirror staleness (last
+  `mirror cycle done` in mirror.log), and DB backup failures. Alerts journal as
+  `health-alert` (the Telegram alerter pushes them) with a 6h per-check
+  cooldown; a check that cannot run reports `unavailable` and never false-alarms.
+- `src/backup.ts` (DbBackup) snapshots `terminal.sqlite` every 6h via
+  `VACUUM INTO` from a read-only connection into `data/backups/db` plus a
+  REQUIRED copy to the Drive `db-backups` folder (an unmountable Drive is a loud
+  health-alert, never silent local-only), keeping the newest 7 in both places.
+  Quiet success (audit line), loud failure (journal + alert).
+- Both are visible on `GET /api/health` under `vault` and `backup`.
+- `scripts/verify-funding-semantics.ts` reads the archived market_stats frames
+  (funding_rate + funding_timestamp) and reports the venue's ACTUAL funding
+  cadence per market to `research/funding-semantics.json` - timestamp-derived
+  cadences are authoritative; rate-change-derived ones are marked as inference.
+  First run on real captures: BTC funding cadence ~1h (authoritative).

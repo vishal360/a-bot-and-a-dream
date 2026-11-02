@@ -12,7 +12,7 @@ export type KlineReplayResult = {
   trades: { entryTime: string; exitTime: string; side: 'long' | 'short'; entry: number; exit: number; quantity: number; pnl: number; reason: string }[];
   equity: number[]; netPnl: number; maxDrawdown: number; winRate: number; profitFactor: number | null;
   feesUsd: number; warnings: string[];
-  config: { capital: number; feeBps: number; spreadBps: number; notionalPerOrderUsd: number; source: string };
+  config: { capital: number; feeBps: number; spreadBps: number; notionalPerOrderUsd: number; source: string; executionModel: 'taker' | 'maker-conservative'; limitTtlCandles: number };
 };
 
 /** Historical-screen lane (docs/HISTORY_BACKFILL.md): replays a strategy over public
@@ -30,6 +30,8 @@ export function replayKlines(input: {
   registry: StrategyRegistry; strategyId: string; params: Record<string, number>;
   klines: Kline[]; funding?: { time: number; rate: number }[]; symbol: string;
   capital: number; feeBps: number; spreadBps?: number; notionalPerOrderUsd: number; source: string;
+  executionModel?: 'taker' | 'maker-conservative';
+  limitTtlCandles?: number;
 }): KlineReplayResult {
   const { registry, strategyId, klines, funding, symbol } = input;
   const strategy = registry.get(strategyId);
@@ -39,6 +41,9 @@ export function replayKlines(input: {
   if (!Number.isInteger(input.feeBps) || input.feeBps < 0 || input.feeBps > 100) throw new Error('Invalid replay feeBps');
   if (!Number.isFinite(spreadBps) || spreadBps < 0 || spreadBps > 100) throw new Error('Invalid replay spreadBps');
   if (!Number.isFinite(input.notionalPerOrderUsd) || input.notionalPerOrderUsd < 10 || input.notionalPerOrderUsd > input.capital) throw new Error('Invalid notionalPerOrderUsd');
+  if (input.limitTtlCandles !== undefined && (!Number.isInteger(input.limitTtlCandles) || input.limitTtlCandles < 1 || input.limitTtlCandles > 100)) throw new Error('Invalid limitTtlCandles');
+  const maker = input.executionModel === 'maker-conservative';
+  const ttl = Math.max(1, Math.trunc(input.limitTtlCandles ?? 5));
   if (!Array.isArray(klines) || klines.length < 2) throw new Error('Kline replay needs at least 2 candles');
   let lastOpen = -Infinity;
   for (const k of klines) {
@@ -53,6 +58,9 @@ export function replayKlines(input: {
     'Funding (when provided) is venue funding history mapped as a signal only, with its native cadence — it is not Lighter hourly funding.',
     'No account risk limits, halts or liquidation modeling; the window buffer is shared (read-only context) for linear-time replay.',
   ];
+  if (maker) {
+    warnings.push(`Maker-conservative fills: limits are placed at the DECISION candle's close and fill only when a LATER candle trades strictly THROUGH the level - touch-equal prices do NOT fill, queue position is never assumed, and fees stay at the taker rate (maker rebates are not credited). Unfilled limits cancel after ${ttl} candle(s); a stale closing limit falls back to a taker exit rather than holding forever.`);
+  }
 
   let position: { quantity: number; basis: number; side: 'long' | 'short'; entryTime: string } | null = null;
   let cash = input.capital, peak = cash, maxDrawdown = 0, feesUsd = 0;
@@ -60,13 +68,66 @@ export function replayKlines(input: {
   let pending: StrategyProposal | null = null;
   let fundingIndex = 0;
   const window: { time: string; mid: number }[] = [];
+  // Maker-conservative state: at most one resting limit, placed at the decision candle's
+  // close, active from the NEXT candle, cancelled after ttl candles (a stale closing
+  // limit exits via taker instead of becoming an unbounded hold).
+  type RestingLimit = { action: 'open' | 'close'; side: 'buy' | 'sell'; limitPrice: number; fraction?: number; reason: string; placedAtIndex: number; expiresAtIndex: number };
+  let pendingLimit: RestingLimit | null = null;
+  let expiredLimits = 0;
 
   for (let i = 0; i < klines.length; i++) {
     const k = klines[i];
     const time = new Date(k.closeTime).toISOString();
 
-    // Execute the proposal queued on the PREVIOUS candle at this candle's open: no look-ahead.
-    if (pending && i > 0) {
+    // Maker-conservative: a resting limit fills only when THIS candle trades strictly
+    // THROUGH its level (entry: buy fills on low < limit, short on high > limit; exit:
+    // the exit side is the opposite of the position side). Limits placed at the decision
+    // candle's close are live from the next candle; expired closes fall back to taker.
+    if (maker && pendingLimit && i > pendingLimit.placedAtIndex) {
+      const limit: RestingLimit = pendingLimit;
+      const through = limit.action === 'open'
+        ? (limit.side === 'buy' ? k.low < limit.limitPrice : k.high > limit.limitPrice)
+        : (limit.side === 'sell' ? k.high > limit.limitPrice : k.low < limit.limitPrice);
+      if (i > limit.expiresAtIndex) {
+        pendingLimit = null;
+        expiredLimits++;
+        if (limit.action === 'close' && position) {
+          // A stale exit must not become an unbounded hold: taker exit now, honestly priced.
+          const signed = position.side === 'long' ? 1 : -1;
+          const fee = k.open * position.quantity * input.feeBps / 10000;
+          feesUsd += fee;
+          cash += signed * (k.open - position.basis / position.quantity) * position.quantity - fee;
+          closed.push({ entryTime: position.entryTime, exitTime: time, side: position.side,
+            entry: position.basis / position.quantity, exit: k.open, quantity: position.quantity,
+            pnl: signed * (k.open - position.basis / position.quantity) * position.quantity - fee, reason: 'limit expired: taker exit' });
+          position = null;
+        }
+      } else if (through) {
+        pendingLimit = null;
+        const price = limit.limitPrice;
+        if (limit.action === 'close' && position) {
+          const fraction = limit.fraction ?? 1;
+          const quantity = position.quantity * fraction;
+          if (quantity > 0) {
+            const signed = position.side === 'long' ? 1 : -1;
+            const fee = price * quantity * input.feeBps / 10000;
+            feesUsd += fee;
+            cash += signed * (price - position.basis / position.quantity) * quantity - fee;
+            closed.push({ entryTime: position.entryTime, exitTime: time, side: position.side,
+              entry: position.basis / position.quantity, exit: price, quantity,
+              pnl: signed * (price - position.basis / position.quantity) * quantity - fee, reason: limit.reason.slice(0, 120) });
+            position.quantity = Number((position.quantity - quantity).toFixed(8));
+            if (position.quantity <= 0) position = null;
+          }
+        } else if (limit.action === 'open' && !position) {
+          const quantity = input.notionalPerOrderUsd / price;
+          const fee = price * quantity * input.feeBps / 10000;
+          feesUsd += fee;
+          cash -= fee;
+          position = { quantity, basis: price * quantity, side: limit.side === 'buy' ? 'long' : 'short', entryTime: time };
+        }
+      }
+    } else if (!maker && pending && i > 0) {
       const proposal = pending;
       pending = null;
       if (proposal.action === 'close' && position) {
@@ -110,6 +171,25 @@ export function replayKlines(input: {
       equityUsd: equity[equity.length - 1] ?? input.capital, now: time,
     };
     try { pending = strategy.evaluate(ctx); } catch { pending = null; }
+    // Maker mode: convert the decision made at THIS candle's close into a resting limit
+    // (live from the next candle). While a limit rests, new decisions are dropped - the
+    // first decision owns the slot, exactly like one real working order.
+    if (maker && pending && !pendingLimit) {
+      const proposal = pending;
+      pending = null;
+      const opens = proposal.action === 'open' && !position;
+      const closes = proposal.action === 'close' && !!position;
+      if (opens || closes) {
+        pendingLimit = {
+          action: proposal.action === 'open' ? 'open' : 'close',
+          side: proposal.action === 'open' ? proposal.side : (position!.side === 'long' ? 'sell' : 'buy'),
+          limitPrice: k.close,
+          fraction: proposal.action === 'close' ? proposal.fraction : undefined,
+          reason: proposal.rationale,
+          placedAtIndex: i, expiresAtIndex: i + ttl,
+        };
+      }
+    }
 
     let value = cash;
     if (position) {
@@ -131,12 +211,13 @@ export function replayKlines(input: {
       pnl: signed * (k.close - position.basis / position.quantity) * position.quantity - fee, reason: 'end of history' });
   }
 
+  if (maker && expiredLimits) warnings.push(`${expiredLimits} limit order(s) expired unfilled and were cancelled (stale closing limits fell back to a taker exit) - maker fills are NOT guaranteed, and this replay says so numerically.`);
   const wins = closed.filter(t => t.pnl > 0).length;
   const winSum = closed.reduce((s, t) => s + Math.max(t.pnl, 0), 0), lossSum = closed.reduce((s, t) => s + Math.max(-t.pnl, 0), 0);
   return {
     kind: 'historical-klines-replay', strategyId, params, symbol, candles: klines.length, source: input.source,
     trades: closed, equity, netPnl: cash - input.capital, maxDrawdown, winRate: closed.length ? wins / closed.length : 0,
     profitFactor: lossSum ? winSum / lossSum : null, feesUsd, warnings,
-    config: { capital: input.capital, feeBps: input.feeBps, spreadBps, notionalPerOrderUsd: input.notionalPerOrderUsd, source: input.source },
+    config: { capital: input.capital, feeBps: input.feeBps, spreadBps, notionalPerOrderUsd: input.notionalPerOrderUsd, source: input.source, executionModel: maker ? 'maker-conservative' : 'taker', limitTtlCandles: ttl },
   };
 }

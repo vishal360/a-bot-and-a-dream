@@ -33,6 +33,8 @@ future project.
 | **Agent ops: Telegram alerting + persona model fallback + shadow persistence** | src/alerts.ts + agent-runtime.ts | Dark-persona detection (reject streaks), model chains per persona, opt-in shadow persistence across restarts; fail-closed without .env config |
 | **Shadow→paper promotion gate** | src/agent-promotion.ts + POST /api/agents/promote | Threshold-locked unlock (100 graded / 55% / 3 days by operator decision), 2% allocation cap, restart re-locks, every order journaled; paper-only by construction |
 | **Journal-as-agent-memory + conformal calibration** | agent-runtime.ts + research/conformal_calibration.py | Personas see their own last 10 graded outcomes; split-conformal 90% move intervals per persona surfaced on the dashboard with honest n<100 warnings |
+| **Research integrity pack** | src/backfill-quality.ts + src/funding-analysis.ts + maker-conservative fills in backtest-klines.ts | Backfill quality gates (duplicates fatal, holes fatal, zero-volume runs flagged), walk-forward refuses bad days, `--attempts` makes sweep grading multiplicity-honest, `--execution maker-conservative` grades maker strategies without queue fantasies, funding cadence verified from own captures (~1h, authoritative) |
+| **Vault-health watchdog + DB backups** | src/health.ts + src/backup.ts + GET /api/health | Disk floor, capture stall, mirror staleness, backup failures -> journaled alerts with cooldown; hourly-compressible sqlite snapshots to local + Drive with keep-7 rotation |
 
 ## In progress
 
