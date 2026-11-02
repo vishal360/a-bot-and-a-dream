@@ -18,6 +18,7 @@ type FleetState = {
   bots: FleetBot[];
   journal: JournalEntry[];
   limits: { note: string; maxBots: number };
+  sparklines?: Record<string, { t: number; v: number }[]>;
 };
 type Capture = { id: string; startedMs: number; frames: number; state: string; markets: { symbol: string }[] };
 type ReplayResult = { netPnl: number; trades: { side: string; entry: number; exit: number; pnl: number; reason: string }[]; maxDrawdown: number; winRate: number; profitFactor: number | null; feesUsd: number; warnings: string[]; symbol: string };
@@ -62,8 +63,18 @@ export default function FleetConsole() {
     <section className="panel"><div className="row"><div><h3>Automation authority</h3><p className="hint">{data.limits.note}</p></div>{data.enabled ? <button className="danger" disabled={busy} onClick={() => act('fleet/disable', {})}>■ Disable paper automation</button> : <button className="primary" disabled={busy} onClick={() => { if (confirm('Authorize PAPER automation for this session? Bots will submit real paper IOC orders through the shared executor, inside every existing risk limit. Authorization clears on restart and never touches live signing.')) act('fleet/enable', { confirm: 'ENABLE PAPER AUTOMATION' }); }}>▷ Enable paper automation</button>}</div>
       <div className="fleet-guard">{['state', 'reason'].map(() => null)}<span className={`badge ${data.guard.state === 'healthy' ? 'running' : 'paper'}`}>GUARD: {data.guard.state.toUpperCase()}</span><span className="hint">{data.guard.reason ?? 'Open exposure permitted'}</span><span className="hint mono">sampled {data.guard.lastSampleAt ? new Date(data.guard.lastSampleAt).toLocaleTimeString() : '—'}</span></div></section>
     <section className="panel"><div className="row"><h3>Bots</h3><span className="badge">PAPER ONLY · SHARED EXECUTOR</span></div>
-      <div className="table-scroll"><table><thead><tr>{['Bot', 'Strategy', 'Market', 'Status', 'Orders / fills', 'Day P&L', 'Realized', 'Open notional', 'Last decision', 'Actions'].map(h => <th key={h}>{h}</th>)}</tr></thead>
-        <tbody>{data.bots.map(b => <tr key={b.id}>
+      <div className="table-scroll"><table><thead><tr>{['Bot', 'Strategy', 'Market', 'Status', 'Orders / fills', 'Day P&L', 'Realized', 'Trend (realized)', 'Open notional', 'Last decision', 'Actions'].map(h => <th key={h}>{h}</th>)}</tr></thead>
+        <tbody>{data.bots.map(b => {
+          const pts = (data.sparklines?.[b.id] ?? []) as { t: number; v: number }[];
+          let spark: React.ReactNode | null = null;
+          if (pts.length >= 2) {
+            const vs = pts.map(p => p.v);
+            const min = Math.min(...vs), max = Math.max(...vs), range = (max - min) || 1;
+            const w = 90, h = 22;
+            const path = pts.map((p, i) => `${(i / (pts.length - 1) * w).toFixed(1)},${(h - (p.v - min) / range * (h - 2) - 1).toFixed(1)}`).join(' ');
+            spark = <svg width={w} height={h} role="img" aria-label={`realized trend over ${pts.length} samples`}><polyline points={path} fill="none" className={vs[vs.length - 1] >= vs[0] ? 'spark-up' : 'spark-down'} strokeWidth="1.5"/></svg>;
+          }
+          return <tr key={b.id}>
           <td><strong>{b.name}</strong><small className="muted" style={{ display: 'block' }}>{b.id}{b.stats.lastError ? ` · ${b.stats.lastError}` : ''}</small></td>
           <td>{b.strategyId}<small className="muted" style={{ display: 'block' }}>{Object.entries(b.params).map(([k, v]) => `${k}=${v}`).join(' · ') || 'default params'}</small></td>
           <td>{b.symbol}<small className="muted" style={{ display: 'block' }}>{b.leverage}× · {b.windowSamples} samples</small></td>
@@ -71,10 +82,11 @@ export default function FleetConsole() {
           <td className="mono">{b.stats.orders} / {b.stats.fills}{b.stats.rejected ? <span className="red"> · {b.stats.rejected} rejected</span> : null}</td>
           <td className={`mono ${b.dayRealizedUsd < 0 ? 'red' : 'green'}`}>{signed(b.dayRealizedUsd)}</td>
           <td className={`mono ${(b.attribution?.realized ?? 0) < 0 ? 'red' : 'green'}`}>{b.attribution ? signed(b.attribution.realized) : '—'}<small className="muted" style={{ display: 'block' }}>{b.attribution ? `${b.attribution.trades} closed · PF n/a` : 'no closed legs'}</small></td>
+          <td>{spark ?? <small className="muted">collecting…</small>}</td>
           <td className="mono">{money(b.openNotionalUsd)}<small className="muted" style={{ display: 'block' }}>cap {money(b.maxOpenNotional)}</small></td>
           <td className="mono muted">{b.stats.lastDecisionAt ? new Date(b.stats.lastDecisionAt).toLocaleTimeString() : '—'}</td>
           <td>{b.status === 'running' ? <button disabled={busy} onClick={() => act('fleet/pause', { id: b.id })}>Pause</button> : <button disabled={busy} onClick={() => act('fleet/start', { id: b.id })}>Start</button>} <button className="danger" disabled={busy} onClick={() => { if (confirm(`Delete ${b.id}? Its decision journal history is kept.`)) act('fleet/delete', { id: b.id }); }}>Delete</button></td>
-        </tr>)}</tbody></table>{!data.bots.length && <div className="empty">No bots yet. Create one below — it starts paused and warm before any order.</div>}</div></section>
+        </tr>; })}</tbody></table>{!data.bots.length && <div className="empty">No bots yet. Create one below — it starts paused and warm before any order.</div>}</div></section>
     <div className="fleet-grid">
       <section className="panel"><h3>New bot</h3><p className="hint">Direction proposals only: the strategy never sizes orders. The runner sizes within your caps, and the paper executor keeps final authority.</p>
         <label>Slug (unique id)<input value={form.slug} onChange={e => setForm({ ...form, slug: e.target.value })} placeholder="breakout-btc"/></label>

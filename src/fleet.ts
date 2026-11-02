@@ -103,6 +103,7 @@ export class FleetManager {
       if (wall - this.lastGuardPersist > 60000) { this.guard.persist(); this.lastGuardPersist = wall; }
       const snapshot = this.paper.status();
       this.updateWindows(snapshot, wall);
+      this.recordSparklines(snapshot, wall);
       if (!this.store.get('fleetEnabled')) {
         for (const bot of this.bots.filter(b => b.status === 'running')) this.skip(bot, 'Fleet automation is disabled', snapshot, 60000);
         return;
@@ -262,6 +263,26 @@ export class FleetManager {
     }
   }
 
+  /** Per-bot realized-PnL sparkline series, sampled at most once per minute per bot and
+   *  bounded to the last 288 points (~5h). Closing-leg attribution only - the same
+   *  honest number the fleet table shows, just over time. Runs even while automation
+   *  is disabled so the trend survives pause/resume. */
+  private recordSparklines(snapshot: PaperStatus, wall: number) {
+    try {
+      const series = (this.store.get('fleetSparkline') ?? {}) as Record<string, { t: number; v: number }[]>;
+      for (const b of snapshot.analytics.bots as any[]) {
+        if (typeof b.botId !== 'string' || !/^fleet-[a-z0-9-]{3,40}$/.test(b.botId) || !Number.isFinite(b.realized)) continue;
+        const points = series[b.botId] ?? [];
+        const last = points.at(-1);
+        if (last && wall - last.t < 60000) continue;
+        points.push({ t: wall, v: Number(b.realized.toFixed(2)) });
+        while (points.length > 288) points.shift();
+        series[b.botId] = points;
+      }
+      this.store.set('fleetSparkline', series);
+    } catch { /* sparklines must never break the fleet tick */ }
+  }
+
   // ---- Operator commands -------------------------------------------------------
 
   private requireIdleSubmit() { if (this.submitBusy) throw new Error('A bot order is in flight; retry in a moment'); }
@@ -402,6 +423,7 @@ export class FleetManager {
           attribution: a ? { realized: a.realized, fees: a.fees, trades: a.trades, winRate: a.winRate, fills: a.fills, volume: a.volume } : null,
           dayRealizedUsd: dayRealized };
       }),
+      sparklines: (this.store.get('fleetSparkline') ?? {}) as Record<string, { t: number; v: number }[]>,
       journal: this.journal.list({ limit: 50 }),
       limits: { note: 'Closer-of-closed-leg attribution; funding and open P&L are account-level. Automation authorization does not survive restart.', maxBots: 12 }
     };

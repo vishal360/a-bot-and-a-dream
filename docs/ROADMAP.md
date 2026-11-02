@@ -35,6 +35,8 @@ future project.
 | **Journal-as-agent-memory + conformal calibration** | agent-runtime.ts + research/conformal_calibration.py | Personas see their own last 10 graded outcomes; split-conformal 90% move intervals per persona surfaced on the dashboard with honest n<100 warnings |
 | **Research integrity pack** | src/backfill-quality.ts + src/funding-analysis.ts + maker-conservative fills in backtest-klines.ts | Backfill quality gates (duplicates fatal, holes fatal, zero-volume runs flagged), walk-forward refuses bad days, `--attempts` makes sweep grading multiplicity-honest, `--execution maker-conservative` grades maker strategies without queue fantasies, funding cadence verified from own captures (~1h, authoritative) |
 | **Vault-health watchdog + DB backups** | src/health.ts + src/backup.ts + GET /api/health | Disk floor, capture stall, mirror staleness, backup failures -> journaled alerts with cooldown; hourly-compressible sqlite snapshots to local + Drive with keep-7 rotation |
+| **Own-capture walk-forward grader** | src/own-captures.ts + scripts/research-own-captures.ts | Replays builtin strategies over OUR OWN Lighter captures (local vault + Drive mirror, quote-derived 1m bars, volume 0 by construction); two-tier SPA + holdout verdict; INSUFFICIENT is an honest report while days accumulate; still never installs the manifest itself |
+| **Fleet realized-PnL sparklines** | fleet.ts + FleetConsole.tsx | Per-bot realized trend sampled once a minute (288 points) rendered as inline SVG on the Bots table; survives pause/resume |
 
 ## In progress
 

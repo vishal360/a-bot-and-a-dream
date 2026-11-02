@@ -1,0 +1,52 @@
+#cloud-config
+# ABAD 24/7 recorder - one-paste provisioning for ANY Ubuntu 22.04/24.04 VM
+# (docs/CLOUD_ACCEPTANCE.md). Paste this file as the VM's "user data" / cloud-init
+# script at creation time. It prepares everything EXCEPT the GitHub PAT: on first
+# login, run the one command it prints to clone + gate + start the systemd recorder.
+#
+# After the VM is up:
+#   ssh <user>@<vm-ip>
+#   sudo bash /opt/abad/bootstrap.sh <your-github-pat>
+#
+# The recorder then survives reboots (systemd), keeps time honest (chrony), and
+# mirrors completed UTC day folders to Google Drive ONLY if you install
+# rclone + configure the remote yourself (the bootstrap prints the steps; the
+# recorder runs fine without the mirror).
+
+package_update: true
+packages:
+  - git
+  - curl
+  - chrony
+  - ca-certificates
+
+runcmd:
+  # Honest clock: a recorder with a drifting clock produces worthless UTC buckets.
+  - systemctl enable --now chrony
+  # 2 GiB swap on the smallest instances: the verifier subprocess chain needs headroom.
+  - fallocate -l 2G /swapfile || true
+  - chmod 600 /swapfile || true
+  - mkswap /swapfile || true
+  - swapon /swapfile || true
+  - grep -q '/swapfile' /etc/fstab || echo '/swapfile none swap sw 0 0' >> /etc/fstab
+  # Bun (pinned major line).
+  - su - ubuntu -c 'curl -fsSL https://bun.sh/install | bash -s "bun-v1.2.4"' || true
+  # The bootstrap: clone, gate, install systemd units. Waits for the operator's PAT.
+  - |
+    cat > /opt/abad-bootstrap.sh <<'EOF'
+    #!/usr/bin/env bash
+    set -euo pipefail
+    PAT="${1:?usage: bash /opt/abad-bootstrap.sh <github-pat>}"
+    RepoUrl="https://x-access-token:${PAT}@github.com/vishal360/a-bot-and-a-dream.git"
+    sudo -u ubuntu git clone "$RepoUrl" /home/ubuntu/a-bot-and-a-dream
+    rm -f /opt/abad-bootstrap.sh   # the PAT never lingers on disk
+    cd /home/ubuntu/a-bot-and-a-dream
+    sudo -u ubuntu bash -c 'export PATH="$HOME/.bun/bin:$PATH"; bun install && bun run typecheck'
+    cp scripts/abad-recorder.service /etc/systemd/system/
+    systemctl daemon-reload
+    systemctl enable --now abad-recorder
+    echo "Recorder installed. Journal: journalctl -u abad-recorder -f"
+    echo "Optional Drive mirror: install rclone, configure a remote named gdrive, then: systemctl enable --now abad-mirror"
+    EOF
+    chmod 700 /opt/abad-bootstrap.sh
+final_message: "ABAD cloud-init done. Log in and run: sudo bash /opt/abad-bootstrap.sh <github-pat>"

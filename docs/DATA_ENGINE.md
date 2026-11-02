@@ -75,3 +75,20 @@ range, state, frames, source bytes, archive bytes and archivedAt.
   cadence per market to `research/funding-semantics.json` - timestamp-derived
   cadences are authoritative; rate-change-derived ones are marked as inference.
   First run on real captures: BTC funding cadence ~1h (authoritative).
+
+## Own-capture walk-forward grading (2026-11-02)
+
+- `scripts/research-own-captures.ts` grades the builtin strategy set over OUR OWN
+  recordings - the local vault AND the Drive mirror (completed days are moved
+  hourly, so a whole-day corpus lives on Drive; days present in both are read
+  from local only). Quote-derived bars: the venue's own market_stats mid_price,
+  falling back to the top-of-book midpoint; volume is 0 BY CONSTRUCTION (book
+  snapshots say nothing about traded volume - volume-aware strategies are
+  meaningless here and the report says so).
+- Two-tier honesty as everywhere: SPA screen on the train window, untouched
+  holdout after; INSUFFICIENT is a first-class report (small corpora are a
+  "keep recording" verdict, never a shrug); a PASS here is real venue evidence
+  but still never installs research/promotions.json - promotion stays with
+  scripts/research-promote.ts alone.
+- First real run: 6 day folders (5 from the Drive mirror), ~385 one-minute bars,
+  ~378k mid samples -> honestly INSUFFICIENT until a few full days accumulate.
