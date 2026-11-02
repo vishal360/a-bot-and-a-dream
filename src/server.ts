@@ -144,6 +144,8 @@ const server = Bun.serve({
           else if (url.pathname === '/api/agents/enable') return json(agents.enable(body));
         else if (url.pathname === '/api/agents/disable') return json(agents.disable());
         else if (url.pathname === '/api/agents/tick') return json(await agents.tick());
+        else if (url.pathname === '/api/agents/promote') return json(agents.unlock(body));
+        else if (url.pathname === '/api/agents/lock') return json(agents.lock());
         else if (url.pathname === '/api/alerts/test') return json(await alerter.test());
         else if (url.pathname === '/api/fleet/enable') return json(fleet.enable(body));
           else if (url.pathname === '/api/fleet/disable') return json(fleet.disable());

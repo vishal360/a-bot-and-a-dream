@@ -81,6 +81,25 @@ Set-Content -NoNewline -Path .env -Value "GEMINI_API_KEY=AIza...your-key..."
   records the model that ACTUALLY served. Shadow persistence: enable
   {confirm, persist: true} survives restarts (audited AGENT_SHADOW_RESUMED);
   the default stays session-only. Executing latches remain session-only.
+- **Shadow-to-paper promotion gate + journal-as-memory + conformal
+  calibration — SHIPPED 2026-11-02.** src/agent-promotion.ts: the ensemble may
+  place PAPER orders only after its graded shadow record proves the
+  operator-approved thresholds (>=100 graded outcomes, >=55% hit rate, >=3
+  distinct UTC days; allocation hard-capped at 2% of equity, unlock phrase
+  ENABLE AGENT PAPER ORDERS). Unlock is refused with exact shortfalls while the
+  record is weak; a restart ALWAYS re-locks execution (session-only, audited
+  AGENT_EXECUTION_OFF). Runtime sizing honors the envelope the paper executor
+  independently enforces (fail-closed at 0%); one open opinion per symbol, no
+  pyramiding; every order and rejection journals. POST /api/agents/promote,
+  POST /api/agents/lock; the Agents tab shows the gate live (graded/hit-rate/
+  days progress + unlock button). Journal-as-agent-memory: each persona's last
+  10 graded outcomes are injected into its prompt (memory is never invented
+  when history is empty). research/conformal_calibration.py produces
+  research/calibration.json (split-conformal 90% interval on the graded move
+  per persona + pooled, finite-sample guarantee, n<100 flagged unreliable);
+  /api/agents/activity surfaces it and the scorecard prints the widths.
+  Restart discipline fix: a session-only shadow latch now ACTUALLY clears on
+  restart (the constructor implements what server.ts only promised before).
 4. **Risk reviewer** — an agent that reads the journal and flags risk-off
    conditions to the operator; it can only suggest, and the fixed risk check can
    still veto everything.

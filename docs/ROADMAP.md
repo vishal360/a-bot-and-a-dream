@@ -31,6 +31,8 @@ future project.
 | **Agent proposal contracts + shadow mode** | src/agent-contract.ts + src/agent-ensemble.ts + src/agent-runtime.ts | 2-of-3 personas, expiring contracts, session-only shadow latch, 500/day model cap, journaled outcomes; journal-only, never executes orders |
 | **Agents dashboard (votes, reasoning, veto trail)** | src/web/AgentsConsole.tsx + GET /api/agents/activity | Live view: persona votes + confidence bars, full rationale, 2-of-3 quorum + dissent/veto, graded shadow outcomes, complete thought-process timeline |
 | **Agent ops: Telegram alerting + persona model fallback + shadow persistence** | src/alerts.ts + agent-runtime.ts | Dark-persona detection (reject streaks), model chains per persona, opt-in shadow persistence across restarts; fail-closed without .env config |
+| **Shadow→paper promotion gate** | src/agent-promotion.ts + POST /api/agents/promote | Threshold-locked unlock (100 graded / 55% / 3 days by operator decision), 2% allocation cap, restart re-locks, every order journaled; paper-only by construction |
+| **Journal-as-agent-memory + conformal calibration** | agent-runtime.ts + research/conformal_calibration.py | Personas see their own last 10 graded outcomes; split-conformal 90% move intervals per persona surfaced on the dashboard with honest n<100 warnings |
 
 ## In progress
 

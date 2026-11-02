@@ -1,7 +1,9 @@
 import type { Store } from './store';
 import type { DecisionJournal } from './journal';
+import { existsSync, readFileSync } from 'node:fs';
 import { buildProposal, validateProposalFields, validateStoredProposal, type AgentProposal } from './agent-contract';
 import { ensembleDirection } from './agent-ensemble';
+import { AgentPromotion } from './agent-promotion';
 
 export type AgentMarketContext = {
   symbol: string; mark: number; fundingRate: number | null; equity: number | null; time: string;
@@ -35,6 +37,11 @@ export type AgentRuntimeOptions = {
   requestTimeoutMs?: number;
   maxMarketsPerTick?: number;
   now?: () => number;
+  /** Paper executor for a PROMOTED ensemble (src/agent-promotion.ts). Undefined =
+   *  no execution path exists at all: the gate can unlock but nothing ever fires. */
+  execute?: (order: { id: string; symbol: string; side: 'buy' | 'sell'; quantity: number; agentId: string; reason: string }) => Promise<unknown>;
+  /** Conformal calibration artifact (research/conformal_calibration.py) surfaced on /activity. */
+  calibrationPath?: string;
 };
 
 /** The agent runtime (docs/AGENT_SETUP.md, build order steps 2-3): calls the configured
@@ -55,6 +62,7 @@ export class AgentRuntime {
   private failures: string[] = [];
   private busy = false;
   private lastTickAt: string | null = null;
+  private readonly promotion: AgentPromotion;
 
   constructor(
     private store: Store,
@@ -65,6 +73,18 @@ export class AgentRuntime {
   ) {
     if (!Number.isInteger(this.cap) || this.cap < 3) throw new Error('Invalid daily request cap');
     if (!Number.isInteger(this.intervalMs) || this.intervalMs < 30000) throw new Error('Agent tick interval must be >= 30000ms');
+    // Restart discipline (docs/AGENT_SETUP.md): a session-only shadow latch never survives a
+    // restart; a PERSISTED one does (the operator opted in at enable time). Agent EXECUTION
+    // is always session-only: a restart re-locks the promotion gate, no exceptions.
+    if (this.store.get('agentEnabled') && this.store.get('agentShadowPersist') !== true) {
+      this.store.set('agentEnabled', false);
+      this.store.audit('AGENT_AUTOMATION_OFF', 'Restart cleared the session-only agent shadow authorization');
+    }
+    if (this.store.get('agentExecEnabled')) {
+      this.store.set('agentExecEnabled', false);
+      this.store.audit('AGENT_EXECUTION_OFF', 'Restart locked agent paper execution; the promotion gate must be re-unlocked');
+    }
+    this.promotion = new AgentPromotion(this.store, this.journal);
   }
 
   private get agents(): AgentPersona[] { return this.options.agents ?? DEFAULT_AGENTS; }
@@ -103,6 +123,11 @@ export class AgentRuntime {
     return this.status();
   }
 
+  /** Shadow-to-paper promotion gate (src/agent-promotion.ts): unlock requires the exact
+   *  phrase AND an eligible graded record; lock() re-locks at any time; restarts re-lock. */
+  unlock(body: any) { return this.promotion.unlock(body); }
+  lock() { return this.promotion.lock(); }
+
   /** Dashboard feed (GET /api/agents/activity): runtime status + the agent-memory
    *  journal + the live marks needed to grade open opinions client-side. */
   activity(limit = 150) {
@@ -112,6 +137,7 @@ export class AgentRuntime {
       status: this.status(),
       entries: this.journal.listByBotPrefix('agent-', limit),
       marks,
+      calibration: this.readCalibration(),
       open: {
         ensemble: (this.store.get('agentShadowPending') ?? []) as PendingShadow[],
         personas: (this.store.get('agentPersonaPending') ?? []) as PendingShadow[],
@@ -135,6 +161,7 @@ export class AgentRuntime {
       intervalMs: this.intervalMs,
       lastTickAt: this.lastTickAt,
       failures: this.failures.slice(-5),
+      execution: this.promotion.status(),
     };
   }
 
@@ -185,6 +212,7 @@ export class AgentRuntime {
         const ensemble = ensembleDirection(valid);
         if (ensemble) {
           const id = crypto.randomUUID();
+          const priorForSymbol = ((this.store.get('agentShadowPending') ?? []) as PendingShadow[]).filter(p => p.agentId === 'agent-ensemble' && p.symbol === market.symbol).length;
           this.journal.record({
             time: new Date(this.nowMs()).toISOString(), botId: 'agent-ensemble', strategyId: 'agent-llm', symbol: market.symbol,
             decision: 'agent-proposal',
@@ -199,6 +227,7 @@ export class AgentRuntime {
             confidence: ensemble.confidence, markAt: market.mark,
             rationale: `${ensemble.direction} by ${ensemble.agreeing.join(' + ')}`,
             createdAt: new Date(this.nowMs()).toISOString(), expiresAtMs: this.nowMs() + 900 * 1000 });
+          void this.maybeExecute(ensemble, market, priorForSymbol);
           shadowsOpened++;
         } else {
           this.journal.record({
@@ -294,7 +323,7 @@ export class AgentRuntime {
    *  model that actually served it — the journal records the truth, not the plan. */
   private async askModel(agent: AgentPersona, market: AgentMarketContext, key: string): Promise<{ text: string; model: string }> {
     const context = { symbol: market.symbol, mark: market.mark, fundingRate: market.fundingRate, accountEquity: market.equity, time: market.time };
-    const prompt = `${agent.persona}\n\nCurrent market context (JSON):\n${JSON.stringify(context)}\n\n` +
+    const prompt = `${agent.persona}${this.memoryBlock(agent.agentId)}\n\nCurrent market context (JSON):\n${JSON.stringify(context)}\n\n` +
       'Respond with ONLY a JSON object, no markdown fences, exactly this shape:\n' +
       '{"direction":"long"|"short"|"flat","confidence":0.0,"horizonSeconds":900,"rationale":"max 300 chars"}\n' +
       'direction is your opinion for the NEXT horizonSeconds (300..3600). confidence 0..1. You may answer flat.';
@@ -324,6 +353,79 @@ export class AgentRuntime {
       }
     }
     throw lastError;
+  }
+
+  /** Promoted-ensemble execution: at most ONE paper order per quorum per symbol while
+   *  no ensemble opinion is already open for that symbol. Sized from account equity and
+   *  the audited agentAllocationPct envelope — the paper executor re-enforces the
+   *  envelope itself (fail-closed at 0), so this sizing can only ever be MORE
+   *  conservative than policy. Every attempt journals. */
+  private async maybeExecute(
+    ensemble: { direction: 'long' | 'short'; confidence: number; agreeing: string[] },
+    market: AgentMarketContext,
+    priorForSymbol: number,
+  ) {
+    if (!this.store.get('agentExecEnabled')) return;
+    if (priorForSymbol > 0) return; // one open opinion per symbol: no pyramiding
+    const execute = this.options.execute;
+    if (!execute) { this.journalExecution('agent-reject', market, 'execution unavailable: no executor is wired into this runtime'); return; }
+    const equity = market.equity ?? 0;
+    if (!Number.isFinite(equity) || equity <= 0) { this.journalExecution('agent-reject', market, 'no account equity available for sizing'); return; }
+    const pct = this.store.get('agentAllocationPct');
+    if (!Number.isInteger(pct) || (pct as number) < 1) { this.journalExecution('agent-reject', market, 'agent allocation envelope is not set'); return; }
+    const notionalUsd = equity * (pct as number) / 100;
+    const quantity = Number((notionalUsd / market.mark).toFixed(4));
+    if (!(quantity > 0)) { this.journalExecution('agent-reject', market, 'sizing rounded to zero'); return; }
+    const side = ensemble.direction === 'long' ? 'buy' : 'sell';
+    const reason = `ensemble ${ensemble.direction} @ conf ${ensemble.confidence.toFixed(2)} (${ensemble.agreeing.join(' + ')})`;
+    try {
+      await execute({ id: `agent-${crypto.randomUUID()}`, symbol: market.symbol, side, quantity, agentId: 'agent-ensemble', reason });
+      this.journalExecution('agent-order', market, `paper ${side} ${quantity} ${market.symbol} (envelope ${pct}%): ${reason}`.slice(0, 500), { side, quantity, price: market.mark });
+    } catch (error) {
+      this.journalExecution('agent-reject', market, `paper order rejected: ${(error as Error).message}`.slice(0, 480));
+    }
+  }
+
+  private journalExecution(kind: 'agent-order' | 'agent-reject', market: AgentMarketContext, rationale: string, numbers?: { side: 'buy' | 'sell'; quantity: number; price: number }) {
+    try {
+      this.journal.record({
+        time: new Date(this.nowMs()).toISOString(), botId: 'agent-ensemble', strategyId: 'agent-llm', symbol: market.symbol,
+        decision: kind, side: numbers?.side ?? null, quantity: numbers?.quantity ?? null, price: numbers?.price ?? null,
+        rationale, riskChecks: [{ check: 'promotion-gate', pass: kind === 'agent-order', detail: 'agentExecEnabled session latch' }],
+      });
+    } catch { /* journaling must never crash the tick */ }
+  }
+
+  /** Journal-as-agent-memory (docs/AGENT_SETUP.md): the persona's own last graded shadow
+   *  outcomes, oldest first, so each analyst can learn from its scored record. Bounded
+   *  to 10 outcomes; no history means an empty block — memory is never invented. */
+  private memoryBlock(agentId: string): string {
+    try {
+      const outcomes = this.journal.list({ botId: agentId, limit: 60 })
+        .filter(e => e.decision === 'agent-outcome' && e.inputs && typeof (e.inputs as any).grade === 'string')
+        .slice(0, 10);
+      if (!outcomes.length) return '';
+      const lines = outcomes.reverse().map(e => {
+        const i = e.inputs as { direction?: string; grade?: string; markAt?: number; markAtExpiry?: number };
+        const move = typeof i.markAt === 'number' && typeof i.markAtExpiry === 'number' && i.markAt > 0
+          ? ((i.direction === 'long' ? 1 : -1) * (i.markAtExpiry - i.markAt) / i.markAt * 100)
+          : null;
+        const verdict = i.grade === 'correct' ? 'CORRECT' : i.grade === 'wrong' ? 'WRONG' : 'FLAT';
+        return `- ${(i.direction ?? '?').toUpperCase()} ${verdict}${move !== null ? ` (move ${move >= 0 ? '+' : ''}${move.toFixed(2)}%)` : ''}`;
+      });
+      return `\n\nYour recent graded outcomes (oldest first, graded against the real mark at expiry):\n${lines.join('\n')}\nRepeat what worked; do not repeat what failed.`;
+    } catch { return ''; }
+  }
+
+  /** Conformal calibration widths per persona (research/conformal_calibration.py output).
+   *  Missing or broken artifact = null: the UI shows nothing rather than guessing. */
+  private readCalibration(): Record<string, unknown> | null {
+    const path = this.options.calibrationPath ?? 'research/calibration.json';
+    try {
+      if (!existsSync(path)) return null;
+      const parsed = JSON.parse(readFileSync(path, 'utf8'));
+      return parsed && typeof parsed === 'object' ? parsed : null;
+    } catch { return null; }
   }
 }
 

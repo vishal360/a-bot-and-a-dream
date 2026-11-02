@@ -10,6 +10,14 @@ type OpenShadow = {
   id: string; agentId: string; symbol: string; direction: 'long' | 'short'; confidence: number;
   markAt: number; rationale: string; createdAt: string; expiresAtMs: number;
 };
+type PromotionStatus = {
+  unlocked: boolean;
+  thresholds: { minGraded: number; minHitRate: number; minDays: number; maxAllocationPct: number };
+  allocationPct: number;
+  stats: { graded: number; correct: number; hitRate: number | null; distinctDays: number };
+  shortfalls: string[]; eligible: boolean;
+};
+type CalibrationStatus = { personas: Record<string, { n: number; hitRate: number | null; intervalPct: [number, number] | null; reliable: boolean }> } | null;
 type AgentStatus = {
   enabled: boolean; apiKeyPresent: boolean;
   models: { agentId: string; model: string }[];
@@ -17,11 +25,13 @@ type AgentStatus = {
   pendingShadow: number; pendingShadowList: OpenShadow[];
   personaPending: number; personaPendingList: OpenShadow[];
   intervalMs: number; lastTickAt: string | null; failures: string[];
+  execution: PromotionStatus;
 };
 type Activity = {
   status: AgentStatus; entries: JournalEntry[];
   marks: Record<string, number>;
   open: { ensemble: OpenShadow[]; personas: OpenShadow[] };
+  calibration: CalibrationStatus;
 };
 
 const DIRECTION_CLASS: Record<string, string> = { long: 'green', short: 'red', flat: 'amber' };
@@ -104,6 +114,11 @@ export default function AgentsConsole() {
   const liveMark = liveEnsemble ? marks[liveEnsemble.symbol] : undefined;
   const liveMove = liveEnsemble && liveMark !== undefined
     ? (liveEnsemble.direction === 'long' ? 1 : -1) * (liveMark - liveEnsemble.markAt) / liveEnsemble.markAt * 100 : null;
+  const exec = status.execution;
+  const calibration = data.calibration;
+  const byMarket: Record<string, { ens: number; per: number }> = {};
+  for (const o of open.ensemble) byMarket[o.symbol] = { ens: (byMarket[o.symbol]?.ens ?? 0) + 1, per: byMarket[o.symbol]?.per ?? 0 };
+  for (const o of open.personas) byMarket[o.symbol] = { ens: byMarket[o.symbol]?.ens ?? 0, per: (byMarket[o.symbol]?.per ?? 0) + 1 };
   const metric = (label: string, value: string, note: string, tone = '') => <div className="metric"><span>{label}</span><strong className={tone}>{value}</strong><small>{note}</small></div>;
   const chip = (label: string, cls: string) => <span className={`badge ${cls}`}>{label}</span>;
   const voteChip = (direction: string | null | undefined, confidence?: number) => {
@@ -118,6 +133,7 @@ export default function AgentsConsole() {
       {metric('MODEL REQUESTS', `${status.requests.used}/${status.requests.cap}`, `resets UTC ${status.requests.day}`)}
       {metric('OPEN ENSEMBLE CALLS', String(open.ensemble.length), liveEnsemble ? `${liveEnsemble.direction.toUpperCase()} · live ${pct(liveMove!)}` : 'none open right now')}
       {metric('GRADED HIT RATE', ensembleOutcomes.length ? `${Math.round(correctOf(ensembleOutcomes) / ensembleOutcomes.length * 100)}%` : '—', `${correctOf(ensembleOutcomes)}/${ensembleOutcomes.length} ensemble calls correct`, ensembleOutcomes.length ? (correctOf(ensembleOutcomes) / ensembleOutcomes.length >= 0.5 ? 'green' : 'red') : '')}
+      {metric('PROMOTION GATE', exec.unlocked ? 'UNLOCKED' : `${exec.stats.graded}/${exec.thresholds.minGraded}`, exec.unlocked ? `paper orders live · ${exec.allocationPct}% envelope` : 'graded shadow outcomes toward unlock', exec.unlocked ? 'green' : '')}
     </div>
     {error && <div className="error" role="alert">{error}<button onClick={() => setError('')}>Dismiss</button></div>}
     {notice && <div role="status" className="banner">{notice}</div>}
@@ -154,6 +170,7 @@ export default function AgentsConsole() {
             <td>{chip(o.direction.toUpperCase(), DIRECTION_CLASS[o.direction])}</td><td>{o.markAt.toFixed(2)}</td>
             <td>{move === null ? '—' : moveSpan(move)}</td><td className="mono">{countdown(o.expiresAtMs)}</td></tr>;
         })}</tbody></table></div>}
+      {Object.keys(byMarket).length > 0 && <p className="muted small">Per market: {Object.entries(byMarket).map(([symbol, c]) => <strong key={symbol} style={{ marginRight: 12 }}>{symbol}: {c.ens} ensemble · {c.per} analysts</strong>)}</p>}
     </section>
 
     <div className="fleet-grid">
@@ -206,6 +223,25 @@ export default function AgentsConsole() {
     </div>
 
     <section className="panel">
+      <div className="row"><h3>Shadow → paper gate</h3>{exec.unlocked ? chip(`UNLOCKED · ${exec.allocationPct}% envelope`, 'green') : chip('LOCKED', 'red')}</div>
+      <p className="muted">The ensemble may place <strong>paper</strong> orders only after its graded shadow record proves the operator-approved thresholds: at least {exec.thresholds.minGraded} graded outcomes, ≥{Math.round(exec.thresholds.minHitRate * 100)}% hit rate, spread over ≥{exec.thresholds.minDays} distinct days. Allocation is capped at {exec.thresholds.maxAllocationPct}% of equity. A restart always re-locks this gate — re-unlocking is a deliberate act, never a leftover.</p>
+      <div className="metrics compact">
+        {metric('GRADED', `${exec.stats.graded}/${exec.thresholds.minGraded}`, 'ensemble outcomes graded at expiry')}
+        {metric('HIT RATE', exec.stats.hitRate === null ? '—' : `${Math.round(exec.stats.hitRate * 100)}%`, `floor ${Math.round(exec.thresholds.minHitRate * 100)}%`, exec.stats.hitRate !== null && exec.stats.hitRate >= exec.thresholds.minHitRate ? 'green' : '')}
+        {metric('DAYS', `${exec.stats.distinctDays}/${exec.thresholds.minDays}`, 'distinct UTC days with grades')}
+      </div>
+      {exec.shortfalls.length
+        ? <p className="muted small">Not yet eligible: {exec.shortfalls.join(' · ')}.</p>
+        : <p className="muted small">The record meets every threshold — unlock is the operator&apos;s call.</p>}
+      <div className="row wrap">
+        {!exec.unlocked
+          ? <button className="primary" disabled={busy} onClick={() => { const confirm = window.prompt('Type ENABLE AGENT PAPER ORDERS to unlock paper execution for the ensemble:'); if (confirm) act('agents/promote', { confirm }); }}>Unlock paper execution</button>
+          : <button className="danger" disabled={busy} onClick={() => act('agents/lock', {})}>Lock execution</button>}
+      </div>
+      <p className="muted small">Paper only: this terminal has no real-money executor. Orders land inside the agent sub-account envelope, which the paper executor enforces independently and fail-closed (0% until policy says otherwise). Every order and every rejection is journaled.</p>
+    </section>
+
+    <section className="panel">
       <div className="row"><h3>Analyst scorecard — who deserves trust</h3><span className="badge">{personaOutcomes.length} graded votes</span></div>
       {personaOutcomes.length
         ? <div className="table-scroll"><table><thead><tr><th>Analyst</th><th>Model</th><th>Proposals</th><th>Graded</th><th>Correct</th><th>Hit rate</th><th>Avg confidence</th></tr></thead>
@@ -215,6 +251,7 @@ export default function AgentsConsole() {
             <td>{p.avgConfidence === null ? '—' : `${(p.avgConfidence * 100).toFixed(0)}%`}</td></tr>)}</tbody></table></div>
         : <p className="empty">No persona votes have expired yet. Every analyst is graded individually — the ensemble is only as good as its members.</p>}
       {confidenceHonesty.correct.length + confidenceHonesty.wrong.length > 0 && <p className="muted small">Confidence honesty: correct calls averaged <strong>{avg(confidenceHonesty.correct) === null ? '—' : `${(avg(confidenceHonesty.correct)! * 100).toFixed(0)}%`}</strong> confidence, wrong calls <strong>{avg(confidenceHonesty.wrong) === null ? '—' : `${(avg(confidenceHonesty.wrong)! * 100).toFixed(0)}%`}</strong>. If those numbers converge, the confidence figure means nothing — and we will say so here.</p>}
+      {calibration && Object.keys(calibration.personas ?? {}).length > 0 && <p className="muted small">Conformal calibration (90% interval on the graded move): {Object.entries(calibration.personas).map(([id, c]) => `${PERSONAS[id]?.name ?? id}: ${c.intervalPct ? `±${Math.abs(c.intervalPct[1]).toFixed(2)}%` : '—'}${c.reliable ? '' : ` (n=${c.n}, unreliable — keep collecting)`}`).join(' · ')}.</p>}
     </section>
 
     <section className="panel">
