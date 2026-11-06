@@ -30,6 +30,51 @@ export type PromotionEvaluation = {
 
 export const UNLOCK_PHRASE = 'ENABLE AGENT PAPER ORDERS';
 
+/** Cumulative gate memory (`agentGateStats` in the store): the decision journal is a
+ *  bounded 5,000-entry ring, so a promotion gate that reads ONLY the journal would
+ *  see its graded count SHRINK as old outcomes roll off — a dishonest regression.
+ *  One store row per UTC day (kept 90 days) accumulates the ensemble's graded
+ *  outcomes forever; the journal remains the display window. */
+export type GateDayStats = { graded: number; correct: number };
+export type GateStatsStore = { byDay: Record<string, GateDayStats> };
+const GATE_STATS_KEY = 'agentGateStats';
+
+export function recordGateOutcome(store: Store, dayIso: string, correct: boolean): void {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dayIso)) throw new Error('Invalid gate stats day');
+  const cur = (store.get(GATE_STATS_KEY) as GateStatsStore | undefined) ?? { byDay: {} };
+  const day = cur.byDay[dayIso] ?? { graded: 0, correct: 0 };
+  day.graded += 1;
+  if (correct) day.correct += 1;
+  cur.byDay[dayIso] = day;
+  const days = Object.keys(cur.byDay).sort();
+  while (days.length > 90) delete cur.byDay[days.shift()!];
+  store.set(GATE_STATS_KEY, cur);
+}
+
+function aggregateGate(byDay: Record<string, GateDayStats>): PromotionStats {
+  let graded = 0, correct = 0;
+  const days = Object.keys(byDay).sort();
+  for (const d of days) { graded += byDay[d].graded; correct += byDay[d].correct; }
+  return { graded, correct, hitRate: graded ? correct / graded : null, distinctDays: days.length, window: { first: days[0] ?? null, last: days[days.length - 1] ?? null } };
+}
+
+/** Store-backed stats when available; on first use, seeds the store from the journal
+ *  window exactly once so the pre-upgrade record is not lost. */
+export function loadGateStats(store: Store, journal: DecisionJournal): PromotionStats {
+  const stored = store.get(GATE_STATS_KEY) as GateStatsStore | undefined;
+  if (stored && Object.keys(stored.byDay ?? {}).length) return aggregateGate(stored.byDay);
+  const entries = journal.list({ botId: 'agent-ensemble', limit: 1000 }).filter(e => e.decision === 'agent-outcome');
+  const byDay: Record<string, GateDayStats> = {};
+  for (const e of entries) {
+    const d = String(e.time).slice(0, 10);
+    byDay[d] ??= { graded: 0, correct: 0 };
+    byDay[d].graded++;
+    if (e.inputs?.grade === 'correct') byDay[d].correct++;
+  }
+  if (Object.keys(byDay).length) store.set(GATE_STATS_KEY, { byDay });
+  return aggregateGate(byDay);
+}
+
 /** Reads the ENSEMBLE's graded shadow record (decision_journal rows where
  *  bot_id='agent-ensemble' and decision='agent-outcome'). Personas are deliberately
  *  NOT part of this gate: the ensemble is what would trade, so the ensemble is what
@@ -50,8 +95,8 @@ export function ensemblePromotionStats(journal: DecisionJournal): PromotionStats
   };
 }
 
-export function evaluatePromotion(journal: DecisionJournal, thresholds = PROMOTION_THRESHOLDS): PromotionEvaluation {
-  const stats = ensemblePromotionStats(journal);
+export function evaluatePromotion(journal: DecisionJournal, thresholds = PROMOTION_THRESHOLDS, store?: Store): PromotionEvaluation {
+  const stats = store ? loadGateStats(store, journal) : ensemblePromotionStats(journal);
   const shortfalls: string[] = [];
   if (stats.graded < thresholds.minGraded) shortfalls.push(`graded outcomes ${stats.graded}/${thresholds.minGraded}`);
   if (stats.hitRate === null || stats.hitRate < thresholds.minHitRate) {
@@ -76,7 +121,7 @@ export class AgentPromotion {
   private get unlocked(): boolean { return this.store.get('agentExecEnabled') === true; }
 
   status() {
-    const evaluation = evaluatePromotion(this.journal, this.thresholds);
+    const evaluation = evaluatePromotion(this.journal, this.thresholds, this.store);
     return {
       unlocked: this.unlocked,
       thresholds: this.thresholds,
@@ -92,7 +137,7 @@ export class AgentPromotion {
    *  only ever be made SMALLER than policy, never larger. */
   unlock(body: any) {
     if (!body || body.confirm !== UNLOCK_PHRASE) throw new Error(`Type ${UNLOCK_PHRASE} to confirm: the agent ensemble may place PAPER orders inside its allocation envelope`);
-    const evaluation = evaluatePromotion(this.journal, this.thresholds);
+    const evaluation = evaluatePromotion(this.journal, this.thresholds, this.store);
     if (!evaluation.eligible) throw new Error(`Promotion gate refuses: the shadow record does not meet the thresholds yet (${evaluation.shortfalls.join('; ')})`);
     let allocationPct = this.thresholds.maxAllocationPct;
     if (body?.allocationPct !== undefined) {

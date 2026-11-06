@@ -73,7 +73,21 @@ const agents = new AgentRuntime(store, journal, () => {
 }, fetch);
 // Context comes from the feed's OWN watched books (not the venue-wide market list).
 agents.start();
-const alerter = new TelegramAlerter(store, journal, fetch);
+const alerter = new TelegramAlerter(store, journal, fetch, {
+  partners: {
+    gateStatus: () => agents.status().execution,
+    digestLines: () => {
+      const g = agents.status().execution, h = health.status(), b = dbBackup.status(), r = agents.status().requests;
+      const hit = g.stats.hitRate === null ? 'n/a' : `${(g.stats.hitRate * 100).toFixed(1)}%`;
+      return [
+        `Promotion gate: ${g.stats.correct}/${g.stats.graded} graded, hit ${hit}, ${g.stats.distinctDays} day(s) — ${g.unlocked ? 'UNLOCKED' : 'locked'}`,
+        `Vault: ${h.checks.map(c => `${c.check}=${c.state}`).join(', ') || 'checks pending'}`,
+        `DB backups: ${b.successCount} ok, last ${b.lastRunAt ?? 'never'}`,
+        `AI requests today: ${r.used}/${r.cap}`,
+      ];
+    },
+  },
+});
 alerter.start();
 // Vault-health watchdog + evidence-database snapshots (docs/DATA_ENGINE.md).
 const health = new HealthMonitor(store, journal, { feedStatus: () => feed.status() });

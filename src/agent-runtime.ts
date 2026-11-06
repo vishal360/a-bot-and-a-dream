@@ -3,7 +3,7 @@ import type { DecisionJournal } from './journal';
 import { existsSync, readFileSync } from 'node:fs';
 import { buildProposal, validateProposalFields, validateStoredProposal, type AgentProposal } from './agent-contract';
 import { ensembleDirection } from './agent-ensemble';
-import { AgentPromotion } from './agent-promotion';
+import { AgentPromotion, recordGateOutcome } from './agent-promotion';
 
 export type AgentMarketContext = {
   symbol: string; mark: number; fundingRate: number | null; equity: number | null; time: string;
@@ -63,6 +63,7 @@ export class AgentRuntime {
   private busy = false;
   private lastTickAt: string | null = null;
   private readonly promotion: AgentPromotion;
+  private personaStreaks: Record<string, number> = {};
 
   constructor(
     private store: Store,
@@ -85,6 +86,7 @@ export class AgentRuntime {
       this.store.audit('AGENT_EXECUTION_OFF', 'Restart locked agent paper execution; the promotion gate must be re-unlocked');
     }
     this.promotion = new AgentPromotion(this.store, this.journal);
+    this.personaStreaks = (this.store.get('agentPersonaStreaks') ?? {}) as Record<string, number>;
   }
 
   private get agents(): AgentPersona[] { return this.options.agents ?? DEFAULT_AGENTS; }
@@ -162,6 +164,7 @@ export class AgentRuntime {
       lastTickAt: this.lastTickAt,
       failures: this.failures.slice(-5),
       execution: this.promotion.status(),
+      darkPersonas: Object.fromEntries(Object.entries(this.personaStreaks).filter(([, n]) => n >= 5)),
     };
   }
 
@@ -197,10 +200,13 @@ export class AgentRuntime {
               riskChecks: [{ check: 'shadow-mode', pass: true, detail: 'no orders; journal-only' }],
             });
             this.trackPersona(proposal, market.mark);
+            if (this.personaStreaks[agent.agentId]) { this.personaStreaks[agent.agentId] = 0; this.store.set('agentPersonaStreaks', this.personaStreaks); }
             valid.push(proposal);
             proposals++;
           } catch (error) {
             rejections++;
+            this.personaStreaks[agent.agentId] = (this.personaStreaks[agent.agentId] ?? 0) + 1;
+            this.store.set('agentPersonaStreaks', this.personaStreaks);
             this.journal.record({
               time: new Date(this.nowMs()).toISOString(), botId: agent.agentId, strategyId: 'agent-llm', symbol: market.symbol,
               decision: 'agent-reject', rationale: `model proposal rejected: ${(error as Error).message}`.slice(0, 500),
@@ -312,6 +318,11 @@ export class AgentRuntime {
         inputs: { markAt: p.markAt, markAtExpiry: markNow, direction: p.direction, confidence: p.confidence, agents: p.agentId, grade: movePct > 0 ? 'correct' : movePct < 0 ? 'wrong' : 'flat' },
         riskChecks: [{ check: 'shadow-mode', pass: true, detail: 'no orders; journal-only' }],
       });
+      if (fixedBotId === 'agent-ensemble') {
+        // Cumulative gate memory: the journal is a bounded ring, so the promotion gate
+        // must NOT depend on it for history. One store row per UTC day survives forever.
+        recordGateOutcome(this.store, new Date(nowMs).toISOString().slice(0, 10), movePct > 0);
+      }
       return false;
     });
     this.store.set(storeKey, remaining);

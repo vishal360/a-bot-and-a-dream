@@ -26,6 +26,7 @@ type AgentStatus = {
   personaPending: number; personaPendingList: OpenShadow[];
   intervalMs: number; lastTickAt: string | null; failures: string[];
   execution: PromotionStatus;
+  darkPersonas?: Record<string, number>;
 };
 type Activity = {
   status: AgentStatus; entries: JournalEntry[];
@@ -103,6 +104,7 @@ export default function AgentsConsole() {
   const ensembleProposal = entries.find(e => e.bot_id === 'agent-ensemble' && e.decision === 'agent-proposal');
   const ensembleVeto = entries.find(e => e.bot_id === 'agent-ensemble' && e.decision === 'skip');
   const ensembleInputs = (ensembleProposal?.inputs ?? {}) as { direction?: string; confidence?: number; mark?: number; agreeing?: string; dissenting?: string };
+  const dark = status.darkPersonas ?? {};
   const personas = status.models.map(m => {
     const mine = entries.filter(e => e.bot_id === m.agentId);
     const proposal = mine.find(e => e.decision === 'agent-proposal');
@@ -182,7 +184,7 @@ export default function AgentsConsole() {
             const inputs = (p.proposal?.inputs ?? {}) as { direction?: string; confidence?: number; horizonSeconds?: number; mark?: number };
             const rationaleOwn = p.proposal ? null : p.rejection;
             return <article className="panel agent-card" key={p.agentId}>
-              <div className="row"><strong>{PERSONAS[p.agentId]?.name ?? p.agentId}</strong>{voteChip(inputs.direction, inputs.confidence)}</div>
+              <div className="row"><strong>{PERSONAS[p.agentId]?.name ?? p.agentId}</strong>{voteChip(inputs.direction, inputs.confidence)}{dark[p.agentId] ? chip(`DARK · ${dark[p.agentId]} rejects`, 'red') : null}</div>
               <p className="muted small">{PERSONAS[p.agentId]?.role ?? 'analyst'} · {p.model}</p>
               <div className="conf-track"><div className="conf-fill" style={{ width: `${(inputs.confidence ?? 0) * 100}%` }}/></div>
               <p className="rationale">{p.proposal ? p.proposal.rationale : p.rejection ? <span className="red">Last cycle: {p.rejection.rationale}</span> : 'No proposal yet — enable shadow mode and run a cycle.'}</p>
