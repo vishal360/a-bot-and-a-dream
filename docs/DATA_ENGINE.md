@@ -92,3 +92,22 @@ range, state, frames, source bytes, archive bytes and archivedAt.
   scripts/research-promote.ts alone.
 - First real run: 6 day folders (5 from the Drive mirror), ~385 one-minute bars,
   ~378k mid samples -> honestly INSUFFICIENT until a few full days accumulate.
+- 2026-11-07 cross-root fixes found by real data: capture files are now read from
+  the root their day folder was found in (Drive days were silently ENOENTd by the
+  local-only read path), cloud-filter listings are enumerated until stable, and
+  the grader gained `--from/--to` day windows plus `--train-bars` (bars-mode
+  split via `splitByBars` for gappy corpora where day-counts assume contiguous
+  coverage). First REAL verdict on the full corpus: 3614 Drive captures ->
+  3308 one-minute bars, 2.75M mid samples, 5 contiguous days -> SPA screen FAIL,
+  all three builtins train-eliminated. Verdict archived in research/verdicts.
+
+## Backup scheduling and Drive retention (2026-11-07)
+
+- The first DB snapshot now runs ~5 minutes after boot (was: a full 6h interval
+  later - a crash in the first hours lost the day's evidence), and a watchdog
+  raises one health-alert if the process has been up 12h with zero successful
+  backups. `GET /api/health` -> backup status exposes the new fields.
+- `scripts/prune-drive-archive.ps1` enforces the operator's 6-month Drive
+  retention policy: DRY-RUN BY DEFAULT, `-Apply` deletes day folders older than
+  the cutoff (pure YYYY-MM-DD folders only), one summary line per deletion into
+  prune.log (the watchdog's mirror parser is unaffected).

@@ -37,6 +37,7 @@ future project.
 | **Vault-health watchdog + DB backups** | src/health.ts + src/backup.ts + GET /api/health | Disk floor, capture stall, mirror staleness, backup failures -> journaled alerts with cooldown; hourly-compressible sqlite snapshots to local + Drive with keep-7 rotation |
 | **Own-capture walk-forward grader** | src/own-captures.ts + scripts/research-own-captures.ts | Replays builtin strategies over OUR OWN Lighter captures (local vault + Drive mirror, quote-derived 1m bars, volume 0 by construction); two-tier SPA + holdout verdict; INSUFFICIENT is an honest report while days accumulate; still never installs the manifest itself |
 | **Fleet realized-PnL sparklines** | fleet.ts + FleetConsole.tsx | Per-bot realized trend sampled once a minute (288 points) rendered as inline SVG on the Bots table; survives pause/resume |
+| **Operator final-product pass (2026-11-07)** | backup.ts, prune-drive-archive.ps1, sweep-grid.ts, alerts.ts, agent-promotion.ts | Backup first-run at 5 min + 12h no-success alert; 6-month Drive retention pruner (dry-run default); sweep-attempts generator for multiplicity-honest sweeps; cumulative gate memory (the gate can no longer shrink with journal rolloff); gate-milestone Telegram alerts; daily digest; dark-persona badges |
 
 ## In progress
 

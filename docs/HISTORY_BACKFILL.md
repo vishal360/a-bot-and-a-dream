@@ -88,3 +88,21 @@ bun run scripts/research-walkforward.ts --history data/history/binance-spot-BTCU
   candle (touch-equal does not fill, queue position is never assumed), fees stay
   at the taker rate, unfilled limits cancel after the TTL and stale exits fall
   back to a taker exit. The warning block and report record the model used.
+
+## Sweep grading and own-capture windows (2026-11-07)
+
+- `scripts/research-sweep.ts` + `src/sweep-grid.ts`: a grid spec
+  ("lookbackSeconds=60,900,3600;stopPct=0.003,0.006") becomes the EXHAUSTIVE
+  attempts file that `research-walkforward --attempts` consumes — the SPA input
+  counts every configuration the sweep really tried (multiplicity honesty).
+  Attempts are transient inputs in git-ignored data/sweeps; verdicts land in
+  research/verdicts.
+- The own-captures grader gained `--from/--to` day windows and `--train-bars`
+  (bars-mode split via `splitByBars`) for gappy quote-derived corpora where
+  day-count splits assume contiguous coverage; capture files are read from the
+  root their day folder was found in (Drive days were silently ENOENTd before),
+  and cloud-filter listings are enumerated until stable.
+- First REAL own-venue verdict (2026-11-06): 3614 Drive captures -> 3308
+  one-minute bars, 2.75M mid samples, 5 contiguous days -> SPA screen FAIL, all
+  three builtins train-eliminated. The pipeline works end-to-end on our own
+  recordings and truthfully reports no edge.

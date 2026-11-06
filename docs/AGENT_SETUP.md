@@ -100,6 +100,17 @@ Set-Content -NoNewline -Path .env -Value "GEMINI_API_KEY=AIza...your-key..."
   /api/agents/activity surfaces it and the scorecard prints the widths.
   Restart discipline fix: a session-only shadow latch now ACTUALLY clears on
   restart (the constructor implements what server.ts only promised before).
+- **Cumulative gate memory + milestones + digest + dark badges — 2026-11-07.**
+  The promotion gate reads CUMULATIVE store-backed stats (one row per UTC day,
+  kept 90 days, seeded once from the journal window) so the gate can no longer
+  shrink dishonestly when old graded outcomes roll off the bounded journal.
+  Telegram alerting gained: gate MILESTONE alerts (fire once at 100 graded
+  outcomes — calibration becomes statistically reliable — and once when every
+  threshold is met; latched, failed sends retried next tick) and a daily digest
+  at a configurable UTC hour (gate progress, vault checks, backup status, AI
+  budget — composed by the server, one message per day). The runtime tracks
+  per-persona reject streaks (persisted across restarts) exposed as
+  status.darkPersonas and rendered as a DARK badge on the analysts cards.
 4. **Risk reviewer** — an agent that reads the journal and flags risk-off
    conditions to the operator; it can only suggest, and the fixed risk check can
    still veto everything.
