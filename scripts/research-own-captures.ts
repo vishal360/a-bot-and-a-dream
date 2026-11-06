@@ -19,7 +19,7 @@ import { replayKlines } from '../src/backtest-klines';
 import { builtinStrategies } from '../src/strategies/builtin';
 import { StrategyRegistry } from '../src/strategies/registry';
 import { configId } from '../src/promotion';
-import { splitWalkForward, walkForwardVerdict } from '../src/walkforward';
+import { splitByBars, splitWalkForward, walkForwardVerdict } from '../src/walkforward';
 import { captureBars, marketIdFor, toKlines, type CaptureObject } from '../src/own-captures';
 
 const root = resolve(import.meta.dir, '..');
@@ -51,6 +51,10 @@ const feeBps = Math.trunc(num('fee-bps', 2));
 const notional = num('notional', Math.min(1000, capital - 1));
 const alpha = num('alpha', 0.05);
 const reps = Math.trunc(num('reps', 2000));
+// Optional contiguous day window + bars-mode split for gappy quote-derived corpora.
+const fromDay = arg('from');
+const toDay = arg('to');
+const trainBarsArg = arg('train-bars');
 if (!existsSync(archiveRoot) && !existsSync(driveRoot)) throw new Error(`neither archive root exists: ${archiveRoot} | ${driveRoot}`);
 
 // Both evidence roots, local first: completed UTC days are MOVED to the Drive mirror
@@ -68,6 +72,12 @@ for (const rootDir of roots) {
   }
 }
 dayFolders.sort((a, b) => a.day.localeCompare(b.day));
+{
+  const windowed = dayFolders.filter(f => (!fromDay || f.day >= fromDay) && (!toDay || f.day <= toDay));
+  if (!windowed.length) throw new Error(`no day folders in the requested window ${fromDay ?? '(start)'}..${toDay ?? '(end)'}`);
+  dayFolders.length = 0;
+  dayFolders.push(...windowed);
+}
 if (!dayFolders.length) throw new Error('no UTC day folders in either archive root yet');
 const driveDays = dayFolders.filter(f => f.root === driveRoot).length;
 
@@ -77,15 +87,25 @@ const bars = new Map<number, { openTime: number; open: number; high: number; low
 let capturesRead = 0, capturesUsed = 0, midSamples = 0;
 const perDayCounts = new Map<string, number>();
 for (const { root: rootDir, day } of dayFolders) {
-  const files = readdirSync(join(rootDir, day)).filter(f => f.endsWith('.json')).sort();
+  let parseFailures = 0;
+  // Cloud filters (Google Drive) can return PARTIAL listings on a cold enumeration:
+  // list until the count stops growing (max 8 rounds) before reading.
+  let files: string[] = [];
+  for (let round = 0; round < 8; round++) {
+    const listed = readdirSync(join(rootDir, day)).filter(f => f.endsWith('.json')).sort();
+    if (listed.length === files.length) break;
+    files = listed;
+    await new Promise(r => setTimeout(r, 250));
+  }
   for (const file of files) {
     let capture: CaptureObject;
-    try { capture = JSON.parse(readFileSync(join(archiveRoot, day, file), 'utf8')); capturesRead++; } catch { continue; }
+    try { capture = JSON.parse(readFileSync(join(rootDir, day, file), 'utf8')); capturesRead++; } catch (error) { parseFailures++; if (parseFailures <= 3) console.log('  unreadable:', file, (error as Error).message.slice(0, 80)); continue; }
     const marketId = marketIdFor(capture, market);
     if (marketId === null) continue;
     capturesUsed++;
     captureBars(capture, marketId, bucketMs, bars);
     const dayKey = new Date(capture.manifest?.startedMs ?? 0).toISOString().slice(0, 10);
+    console.log(`  ${day}: ${files.length} capture file(s), ${capturesRead} parsed, ${capturesUsed} with ${market}`);
     perDayCounts.set(day, (perDayCounts.get(day) ?? 0) + 1);
     void dayKey;
   }
@@ -111,12 +131,20 @@ const insufficient = (reason: string): never => {
 };
 
 if (capturesUsed === 0) insufficient(`no captures contain market ${market}`);
-if (klines.length < 300) insufficient(`only ${klines.length} ${bucketMs / 1000}s bar(s) across  day(s); need at least 300 (roughly train+holdout+runway)`);
+if (klines.length < 300) insufficient(`only ${klines.length} ${bucketMs / 1000}s bar(s) across ${dayFolders.length} day(s); need at least 300 (roughly train+holdout+runway)`);
 console.log(`own captures: ${capturesUsed} capture(s) with ${market} -> ${klines.length} x ${bucketMs / 1000}s bars, ${midSamples} mid samples, ${dayFolders.length} day folder(s) (${driveDays} from the Drive mirror)`);
 
 let train: typeof klines = [], holdout: typeof klines = [];
+let splitMode: 'days' | 'bars' = 'days';
 try {
-  ({ train, holdout } = splitWalkForward(klines, trainDays, holdoutDays));
+  if (trainBarsArg !== null) {
+    // Bars-mode split for gappy quote-derived corpora: day counts assume near-contiguous
+    // coverage, which recorded reality often lacks. Contiguous time order is preserved.
+    splitMode = 'bars';
+    ({ train, holdout } = splitByBars(klines, Math.trunc(Number(trainBarsArg))));
+  } else {
+    ({ train, holdout } = splitWalkForward(klines, trainDays, holdoutDays));
+  }
 } catch (error) {
   // Not enough contiguous coverage for the requested split is an honest INSUFFICIENT,
   // not a crash: the corpus needs more recording days (or denser buckets).
@@ -155,7 +183,7 @@ const verdict = walkForwardVerdict({ candidates: candidates.map(c => configId(c.
 const report = {
   generatedAt: new Date().toISOString(), kind: 'own-captures-walkforward', market, bucketSeconds: bucketMs / 1000,
   archive: { localRoot: archiveRoot, driveRoot, dayFolders: dayFolders.length, driveDays, capturesRead, capturesUsed, midSamples, bars: klines.length },
-  split: { trainDays, holdoutDays, trainBars: train.length, holdoutBars: holdout.length },
+  split: { mode: splitMode, trainDays, holdoutDays, trainBars: train.length, holdoutBars: holdout.length, from: fromDay ?? null, to: toDay ?? null },
   screen: { alpha, reps, equityStep, trainSpaPvalue: trainVerdict.spa_pvalue, trainSurvivors, trainVerdict: trainVerdict.verdict },
   holdout: holdoutResults.map(result => ({ id: result.id, strategyId: result.candidate.strategyId, netPnl: result.result.netPnl, trades: result.result.trades.length, maxDrawdown: result.result.maxDrawdown })),
   verdict,

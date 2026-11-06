@@ -18,6 +18,14 @@ export function splitWalkForward(klines: Kline[], trainDays: number, holdoutDays
   return { train: klines.slice(trainStart, holdoutStart), holdout: klines.slice(holdoutStart) };
 }
 
+export function splitByBars(klines: Kline[], trainBars: number): WalkForwardSplit {
+  if (!Array.isArray(klines) || klines.length < 2) throw new Error('Walk-forward needs klines');
+  if (!Number.isInteger(trainBars) || trainBars < 100) throw new Error('trainBars must be an integer >= 100');
+  const holdoutCount = klines.length - trainBars;
+  if (holdoutCount < 50) throw new Error(`Holdout too small: ${holdoutCount} bar(s); need >= 50`);
+  return { train: klines.slice(0, trainBars), holdout: klines.slice(trainBars) };
+}
+
 export type WalkForwardVerdict = {
   verified: { id: string; holdoutNetPnl: number }[];
   rejected: { id: string; reason: 'train-eliminated' | 'holdout-negative'; holdoutNetPnl?: number }[];
