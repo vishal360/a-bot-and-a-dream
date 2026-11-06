@@ -10,6 +10,10 @@ export type DbBackupOptions = {
   driveDir?: string | null;
   keep?: number;
   intervalMs?: number;
+  /** First snapshot runs this long after start() instead of waiting a full interval. */
+  firstRunMs?: number;
+  /** If NO successful backup exists this long after boot, raise a health alert once. */
+  noSuccessAlertMs?: number;
   now?: () => number;
 };
 
@@ -25,12 +29,17 @@ export type DbBackupOptions = {
  *  database contains no secrets (the Gemini key lives in .env, never in sqlite). */
 export class DbBackup {
   private timer: ReturnType<typeof setInterval> | null = null;
+  private firstTimer: ReturnType<typeof setTimeout> | null = null;
+  private startedAt = 0;
+  private noSuccessAlerted = false;
   private busy = false;
   private readonly dbPath: string;
   private readonly localDir: string;
   private readonly driveDir: string | null;
   private readonly keep: number;
   private readonly intervalMs: number;
+  private readonly firstRunMs: number;
+  private readonly noSuccessAlertMs: number;
   private readonly now: () => number;
   private lastRunAt: string | null = null;
   private lastResult: { ok: boolean; file?: string; error?: string } | null = null;
@@ -42,13 +51,47 @@ export class DbBackup {
     this.driveDir = options.driveDir === undefined ? 'G:/My Drive/ABAD-archive/db-backups' : options.driveDir;
     this.keep = options.keep ?? 7;
     this.intervalMs = options.intervalMs ?? 6 * 3600 * 1000;
+    this.firstRunMs = options.firstRunMs ?? 5 * 60 * 1000;
+    this.noSuccessAlertMs = options.noSuccessAlertMs ?? 12 * 3600 * 1000;
     this.now = options.now ?? Date.now;
     if (!Number.isInteger(this.keep) || this.keep < 1 || this.keep > 60) throw new Error('Invalid backup keep count');
     if (!Number.isInteger(this.intervalMs) || this.intervalMs < 60000) throw new Error('Invalid backup interval');
+    if (!Number.isInteger(this.firstRunMs) || this.firstRunMs < 1000) throw new Error('Invalid backup firstRunMs (min 1000ms)');
+    if (!Number.isInteger(this.noSuccessAlertMs) || this.noSuccessAlertMs < 60000) throw new Error('Invalid noSuccessAlertMs (min 60s)');
   }
 
-  start() { if (this.timer) return; this.timer = setInterval(() => { this.run().catch(() => {}); }, this.intervalMs); }
-  stop() { if (this.timer) clearInterval(this.timer); this.timer = null; }
+  start() {
+    if (this.timer) return;
+    this.startedAt = this.now();
+    // The first snapshot must not wait a full interval: a crash in the first hours
+    // would otherwise lose the day's evidence before the first backup ever ran.
+    this.firstTimer = setTimeout(() => { this.run().catch(() => {}); }, this.firstRunMs);
+    this.timer = setInterval(() => {
+      try { this.checkNoSuccess(); } catch { /* the watchdog must never break the tick */ }
+      this.run().catch(() => {});
+    }, this.intervalMs);
+  }
+  stop() {
+    if (this.timer) clearInterval(this.timer); this.timer = null;
+    if (this.firstTimer) clearTimeout(this.firstTimer); this.firstTimer = null;
+  }
+
+  /** Raise ONE health-alert if the process has been up noSuccessAlertMs with zero
+   *  successful backups — the Drive mount or the database path is probably wrong. */
+  private checkNoSuccess() {
+    if (this.successCount > 0 || this.noSuccessAlerted) return;
+    if (this.now() - this.startedAt < this.noSuccessAlertMs) return;
+    this.noSuccessAlerted = true;
+    const message = `db-backup: no successful backup ${Math.round(this.noSuccessAlertMs / 3600000)}h after boot; check the Drive mount and the database path`;
+    try {
+      this.journal.record({
+        time: new Date(this.now()).toISOString(), botId: 'system-health', strategyId: 'system-health', symbol: 'all',
+        decision: 'health-alert', rationale: message.slice(0, 500),
+        riskChecks: [{ check: 'db-backup', pass: false, detail: message.slice(0, 300) }],
+      });
+    } catch { /* journaling must never mask the watchdog */ }
+    this.store.audit('DB_BACKUP_NEVER_RAN', message.slice(0, 300));
+  }
 
   /** One snapshot. Never throws: failures are journaled + returned. */
   async run(): Promise<{ ok: boolean; file?: string; error?: string }> {
@@ -108,7 +151,10 @@ export class DbBackup {
   status() {
     return {
       dbPath: this.dbPath, localDir: this.localDir, driveDir: this.driveDir, keep: this.keep,
-      intervalMs: this.intervalMs, lastRunAt: this.lastRunAt, lastResult: this.lastResult, successCount: this.successCount,
+      intervalMs: this.intervalMs, firstRunMs: this.firstRunMs, noSuccessAlertMs: this.noSuccessAlertMs,
+      startedAt: this.startedAt ? new Date(this.startedAt).toISOString() : null,
+      noSuccessAlerted: this.noSuccessAlerted,
+      lastRunAt: this.lastRunAt, lastResult: this.lastResult, successCount: this.successCount,
     };
   }
 }
