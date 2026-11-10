@@ -267,6 +267,7 @@ test('acceptance CLI publishes a bound failed report and closes its DB before an
       mkdirSync(dirname(join(dir, file)), { recursive: true }); copyFileSync(join(root, file), join(dir, file));
     }
     await Bun.write(join(dir, 'guard.ts'), `
+Object.defineProperty(process, 'platform', { value: 'win32' }); // the clock backend is win32-only; the fixture fakes its command
 Bun.spawn = ((command: string[], options: any) => {
   if (command[0] !== 'w32tm') throw new Error('Unexpected subprocess');
   return { stdout: new Blob(['The service has not been started. (0x80070426)']).stream(),
@@ -313,6 +314,7 @@ test('observer metadata, source-change, shutdown and finalization failures remai
       if (scenario === 'shutdown-recording') await Bun.write(streamPath, (await Bun.file(streamPath).text()).replace(
         'stop() {', 'stop() { this.counts.recordingFailures++;'));
       await Bun.write(join(dir, 'guard.ts'), `
+Object.defineProperty(process, 'platform', { value: 'win32' }); // the clock backend is win32-only; the fixture fakes its command
 const scenario = ${JSON.stringify(scenario)};
 let queries = 0;
 Bun.spawn = (() => {

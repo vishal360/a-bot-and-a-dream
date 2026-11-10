@@ -1,6 +1,14 @@
 node_modules/
 dist/
-data/
+# Ignore all runtime state, but the four acceptance-hardening helper sources are
+# project code force-included by the review bundle; re-include exactly those.
+data/*
+!data/resumption/
+data/resumption/*
+!data/resumption/acceptance-hardening-check.ts
+!data/resumption/acceptance-hardening-state.ts
+!data/resumption/acceptance-hardening-package.ts
+!data/resumption/acceptance-hardening-helpers.test.ts
 .env
 *.log
 coverage/

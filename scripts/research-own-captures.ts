@@ -113,13 +113,20 @@ for (const { root: rootDir, day } of dayFolders) {
 for (const bar of bars.values()) midSamples += bar.samples;
 const klines = toKlines(bars);
 
+// Coverage accounting (review P0-07): raw quote counts create an illusion of depth.
+// Report the EFFECTIVE sample: hours of sampled minutes vs the span the corpus covers.
+const barTimes = klines.map(k => k.openTime);
+const spanHours = barTimes.length > 1 ? (barTimes[barTimes.length - 1] - barTimes[0]) / 3600000 : 0;
+const barsHours = Number((klines.length * (bucketMs / 3600000)).toFixed(2));
+const coveragePct = spanHours > 0 ? Number((barsHours / spanHours * 100).toFixed(1)) : null;
+
 const verdictsDir = join(root, 'research', 'verdicts');
 mkdirSync(verdictsDir, { recursive: true });
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const insufficient = (reason: string): never => {
   const report = {
     generatedAt: new Date().toISOString(), kind: 'own-captures-walkforward', market, bucketSeconds: bucketMs / 1000,
-    archive: { localRoot: archiveRoot, driveRoot, dayFolders: dayFolders.length, driveDays, capturesRead, capturesUsed, midSamples, bars: klines.length },
+    archive: { localRoot: archiveRoot, driveRoot, dayFolders: dayFolders.length, driveDays, capturesRead, capturesUsed, midSamples, bars: klines.length, barsHours, spanHours: Number(spanHours.toFixed(2)), coveragePct },
     verdict: { verified: [], rejected: [], overall: 'INSUFFICIENT' }, reason, canPromote: false,
     note: 'Not enough own-capture history yet. Keep recording; rerun as days accumulate.',
   };
@@ -182,7 +189,7 @@ const verdict = walkForwardVerdict({ candidates: candidates.map(c => configId(c.
 
 const report = {
   generatedAt: new Date().toISOString(), kind: 'own-captures-walkforward', market, bucketSeconds: bucketMs / 1000,
-  archive: { localRoot: archiveRoot, driveRoot, dayFolders: dayFolders.length, driveDays, capturesRead, capturesUsed, midSamples, bars: klines.length },
+  archive: { localRoot: archiveRoot, driveRoot, dayFolders: dayFolders.length, driveDays, capturesRead, capturesUsed, midSamples, bars: klines.length, barsHours, spanHours: Number(spanHours.toFixed(2)), coveragePct },
   split: { mode: splitMode, trainDays, holdoutDays, trainBars: train.length, holdoutBars: holdout.length, from: fromDay ?? null, to: toDay ?? null },
   screen: { alpha, reps, equityStep, trainSpaPvalue: trainVerdict.spa_pvalue, trainSurvivors, trainVerdict: trainVerdict.verdict },
   holdout: holdoutResults.map(result => ({ id: result.id, strategyId: result.candidate.strategyId, netPnl: result.result.netPnl, trades: result.result.trades.length, maxDrawdown: result.result.maxDrawdown })),

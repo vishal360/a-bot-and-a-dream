@@ -9,7 +9,7 @@ import { DataEngine } from '../src/data-engine';
 import { Store } from '../src/store';
 
 const market: StreamMarket = { symbol: 'BTC', market_id: 1, supported_price_decimals: 2, supported_size_decimals: 5 };
-const baseWall = 1791700000000;
+const baseWall = Date.now() - 2 * 86400000; // 2 days ago: inside default retention, deterministic relative to the clock
 const clock = { wall: baseWall, mono: 100 };
 const rawFrame = (n: number, pad = '') => JSON.stringify({ type: 'subscribed/order_book', channel: 'order_book:1', nonce: n, pad });
 

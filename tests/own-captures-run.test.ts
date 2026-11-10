@@ -17,7 +17,7 @@ test('the own-capture grader reports INSUFFICIENT honestly on a thin archive (no
   const before = existsSync(verdicts) ? readdirSync(verdicts).filter(f => f.includes('own-captures')).length : 0;
   let exit = 0, stdout = '';
   try {
-    stdout = execSync('bun run scripts/research-own-captures.ts --archive ' + JSON.stringify(archive) + ' --market BTC --from 2026-11-01 --to 2026-11-01', { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+    stdout = execSync('bun run scripts/research-own-captures.ts --archive ' + JSON.stringify(archive) + ' --market BTC --from 2026-11-01 --to 2026-11-01 --drive-archive C:/nonexistent-abad-drive', { cwd: process.cwd(), encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
   } catch (e: any) { exit = e.status ?? 1; stdout = String(e.stdout ?? ''); }
   try {
     expect(exit).toBe(1);
