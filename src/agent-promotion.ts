@@ -20,13 +20,43 @@ export type PromotionStats = {
   hitRate: number | null;
   distinctDays: number;
   window: { first: string | null; last: string | null };
+  /** Mean direction-signed move per graded outcome (expectancy of the direction call
+   *  before costs — accuracy is not profitability, so this is displayed beside it). */
+  meanSignedMovePct?: number | null;
 };
 
 export type PromotionEvaluation = {
   eligible: boolean;
   stats: PromotionStats;
   shortfalls: string[];
+  statistics: {
+    binomialPValueUnderFairCoin: number | null;
+    meanSignedMovePct: number | null;
+    note: string;
+  };
 };
+
+/** Exact one-sided binomial upper tail P(X >= successes | n, fair coin); normal
+ *  approximation beyond 500 trials. Answers: how surprising is this hit rate if the
+ *  analyst were a fair coin? (Review P0-08: 55/100 gives ~0.184 — not evidence.) */
+function exactBinomialUpperTail(successes: number, n: number, p = 0.5): number | null {
+  if (!Number.isInteger(successes) || !Number.isInteger(n) || n <= 0 || successes < 0 || successes > n) return null;
+  if (n <= 500) {
+    let tail = 0;
+    for (let k = successes; k <= n; k++) {
+      let logChoose = 0;
+      for (let j = 1; j <= k; j++) logChoose += Math.log((n - j + 1) / j);
+      tail += Math.exp(k * Math.log(p) + (n - k) * Math.log(1 - p) + logChoose);
+    }
+    return Math.min(1, tail);
+  }
+  const mean = n * p, sd = Math.sqrt(n * p * (1 - p));
+  const z = (successes - mean) / sd;
+  const t = 1 / (1 + 0.2316419 * Math.abs(z));
+  const poly = 0.319381530 * t - 0.356563782 * t ** 2 + 1.781477937 * t ** 3 - 1.821255978 * t ** 4 + 1.330274429 * t ** 5;
+  const cdf = 1 - Math.exp(-z * z / 2) * poly / Math.sqrt(2 * Math.PI);
+  return Math.min(1, Math.max(0, z >= 0 ? 1 - cdf : cdf));
+}
 
 export const UNLOCK_PHRASE = 'ENABLE AGENT PAPER ORDERS';
 
@@ -36,43 +66,80 @@ export const UNLOCK_PHRASE = 'ENABLE AGENT PAPER ORDERS';
  *  One store row per UTC day (kept 90 days) accumulates the ensemble's graded
  *  outcomes forever; the journal remains the display window. */
 export type GateDayStats = { graded: number; correct: number };
-export type GateStatsStore = { byDay: Record<string, GateDayStats> };
+export type GateStatsStore = {
+  /** LIFETIME accumulator — never pruned: the gate must not shrink with journal rolloff
+   *  (review P0-09b). `days` counts distinct UTC days ever seen. */
+  lifetime: { graded: number; correct: number; days: number; sumMovePct: number; firstDay: string; lastDay: string };
+  /** Rolling 90-day window for recent-form display. */
+  byDay: Record<string, GateDayStats>;
+};
 const GATE_STATS_KEY = 'agentGateStats';
+const GATE_DAYS_KEPT = 90;
 
-export function recordGateOutcome(store: Store, dayIso: string, correct: boolean): void {
+export function recordGateOutcome(store: Store, dayIso: string, correct: boolean, movePct = 0): void {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(dayIso)) throw new Error('Invalid gate stats day');
-  const cur = (store.get(GATE_STATS_KEY) as GateStatsStore | undefined) ?? { byDay: {} };
+  if (!Number.isFinite(movePct)) throw new Error('Invalid gate move');
+  const cur = (store.get(GATE_STATS_KEY) as GateStatsStore | undefined) ?? {
+    lifetime: { graded: 0, correct: 0, days: 0, sumMovePct: 0, firstDay: dayIso, lastDay: dayIso }, byDay: {},
+  };
+  if (!cur.lifetime) cur.lifetime = { graded: 0, correct: 0, days: 0, sumMovePct: 0, firstDay: dayIso, lastDay: dayIso };
+  cur.lifetime.graded += 1;
+  if (correct) cur.lifetime.correct += 1;
+  cur.lifetime.sumMovePct += movePct;
+  if (!cur.byDay[dayIso]) cur.lifetime.days += 1;
+  cur.lifetime.firstDay = cur.lifetime.firstDay <= dayIso ? cur.lifetime.firstDay : dayIso;
+  cur.lifetime.lastDay = cur.lifetime.lastDay >= dayIso ? cur.lifetime.lastDay : dayIso;
   const day = cur.byDay[dayIso] ?? { graded: 0, correct: 0 };
   day.graded += 1;
   if (correct) day.correct += 1;
   cur.byDay[dayIso] = day;
   const days = Object.keys(cur.byDay).sort();
-  while (days.length > 90) delete cur.byDay[days.shift()!];
+  while (days.length > GATE_DAYS_KEPT) delete cur.byDay[days.shift()!];
   store.set(GATE_STATS_KEY, cur);
 }
 
-function aggregateGate(byDay: Record<string, GateDayStats>): PromotionStats {
-  let graded = 0, correct = 0;
-  const days = Object.keys(byDay).sort();
-  for (const d of days) { graded += byDay[d].graded; correct += byDay[d].correct; }
-  return { graded, correct, hitRate: graded ? correct / graded : null, distinctDays: days.length, window: { first: days[0] ?? null, last: days[days.length - 1] ?? null } };
+function aggregateGate(stored: GateStatsStore): PromotionStats {
+  const life = stored.lifetime;
+  return {
+    graded: life.graded, correct: life.correct,
+    hitRate: life.graded ? life.correct / life.graded : null,
+    distinctDays: life.days,
+    window: { first: life.firstDay, last: life.lastDay },
+    meanSignedMovePct: life.graded ? life.sumMovePct / life.graded : null,
+  };
 }
 
-/** Store-backed stats when available; on first use, seeds the store from the journal
- *  window exactly once so the pre-upgrade record is not lost. */
+/** Store-backed LIFETIME stats when available; on first use, seeds the store from the
+ *  journal window exactly once so the pre-upgrade record is not lost. */
 export function loadGateStats(store: Store, journal: DecisionJournal): PromotionStats {
   const stored = store.get(GATE_STATS_KEY) as GateStatsStore | undefined;
-  if (stored && Object.keys(stored.byDay ?? {}).length) return aggregateGate(stored.byDay);
-  const entries = journal.list({ botId: 'agent-ensemble', limit: 1000 }).filter(e => e.decision === 'agent-outcome');
+  if (stored?.lifetime) return aggregateGate(stored);
+  const entries = journal.list({ botId: 'agent-ensemble', limit: 1000 }).filter(e => e.decision === 'agent-outcome').sort((a, b) => String(a.time).localeCompare(String(b.time)));
   const byDay: Record<string, GateDayStats> = {};
+  let graded = 0, correct = 0, sumMovePct = 0;
+  const days: string[] = [];
   for (const e of entries) {
     const d = String(e.time).slice(0, 10);
-    byDay[d] ??= { graded: 0, correct: 0 };
-    byDay[d].graded++;
-    if (e.inputs?.grade === 'correct') byDay[d].correct++;
+    if (!byDay[d]) { byDay[d] = { graded: 0, correct: 0 }; days.push(d); }
+    byDay[d].graded++; graded++;
+    const isCorrect = e.inputs?.grade === 'correct';
+    if (isCorrect) { byDay[d].correct++; correct++; }
+    const i = e.inputs as any;
+    const move = typeof i?.markAt === 'number' && typeof i?.markAtExpiry === 'number' && i.markAt > 0
+      ? (i.direction === 'long' ? 1 : i.direction === 'short' ? -1 : 0) * (i.markAtExpiry - i.markAt) / i.markAt * 100 : 0;
+    sumMovePct += move;
   }
-  if (Object.keys(byDay).length) store.set(GATE_STATS_KEY, { byDay });
-  return aggregateGate(byDay);
+  if (days.length) {
+    store.set(GATE_STATS_KEY, {
+      lifetime: { graded, correct, days: days.length, sumMovePct, firstDay: days[0], lastDay: days[days.length - 1] },
+      byDay,
+    });
+  }
+  return {
+    graded, correct, hitRate: graded ? correct / graded : null, distinctDays: days.length,
+    window: { first: days[0] ?? null, last: days[days.length - 1] ?? null },
+    meanSignedMovePct: graded ? sumMovePct / graded : null,
+  };
 }
 
 /** Reads the ENSEMBLE's graded shadow record (decision_journal rows where
@@ -103,7 +170,11 @@ export function evaluatePromotion(journal: DecisionJournal, thresholds = PROMOTI
     shortfalls.push(`hit rate ${stats.hitRate === null ? 'n/a' : `${(stats.hitRate * 100).toFixed(1)}%`}/${(thresholds.minHitRate * 100).toFixed(0)}%`);
   }
   if (stats.distinctDays < thresholds.minDays) shortfalls.push(`distinct days ${stats.distinctDays}/${thresholds.minDays}`);
-  return { eligible: shortfalls.length === 0, stats, shortfalls };
+  return { eligible: shortfalls.length === 0, stats, shortfalls, statistics: {
+    binomialPValueUnderFairCoin: exactBinomialUpperTail(stats.correct, stats.graded, 0.5),
+    meanSignedMovePct: (stats as any).meanSignedMovePct ?? null,
+    note: 'Paper-experiment milestone, not live evidence: direction accuracy is not net profitability (fees, funding, sizing and exits are not in this grade), and overlapping horizons weaken independence.',
+  } };
 }
 
 /** The shadow→paper gate. Everything here stays LOCAL PAPER trading: the paper
@@ -129,6 +200,7 @@ export class AgentPromotion {
       stats: evaluation.stats,
       shortfalls: evaluation.shortfalls,
       eligible: evaluation.eligible,
+      statistics: evaluation.statistics,
     };
   }
 

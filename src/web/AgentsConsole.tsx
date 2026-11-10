@@ -253,7 +253,7 @@ export default function AgentsConsole() {
             <td>{p.avgConfidence === null ? '—' : `${(p.avgConfidence * 100).toFixed(0)}%`}</td></tr>)}</tbody></table></div>
         : <p className="empty">No persona votes have expired yet. Every analyst is graded individually — the ensemble is only as good as its members.</p>}
       {confidenceHonesty.correct.length + confidenceHonesty.wrong.length > 0 && <p className="muted small">Confidence honesty: correct calls averaged <strong>{avg(confidenceHonesty.correct) === null ? '—' : `${(avg(confidenceHonesty.correct)! * 100).toFixed(0)}%`}</strong> confidence, wrong calls <strong>{avg(confidenceHonesty.wrong) === null ? '—' : `${(avg(confidenceHonesty.wrong)! * 100).toFixed(0)}%`}</strong>. If those numbers converge, the confidence figure means nothing — and we will say so here.</p>}
-      {calibration && Object.keys(calibration.personas ?? {}).length > 0 && <p className="muted small">Conformal calibration (90% interval on the graded move): {Object.entries(calibration.personas).map(([id, c]) => `${PERSONAS[id]?.name ?? id}: ${c.intervalPct ? `±${Math.abs(c.intervalPct[1]).toFixed(2)}%` : '—'}${c.reliable ? '' : ` (n=${c.n}, unreliable — keep collecting)`}`).join(' · ')}.</p>}
+      {calibration && Object.keys(calibration.personas ?? {}).length > 0 && <p className="muted small">Conformal calibration (90% interval on the graded move): {Object.entries(calibration.personas).map(([id, c]) => `${PERSONAS[id]?.name ?? id}: ${c.intervalPct ? `±${Math.abs(c.intervalPct[1]).toFixed(2)}%` : '—'}${c.reliable ? '' : ` (n=${c.n}, interval unstable — keep collecting)`}`).join(' · ')}.</p>}
     </section>
 
     <section className="panel">

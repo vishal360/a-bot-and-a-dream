@@ -321,7 +321,7 @@ export class AgentRuntime {
       if (fixedBotId === 'agent-ensemble') {
         // Cumulative gate memory: the journal is a bounded ring, so the promotion gate
         // must NOT depend on it for history. One store row per UTC day survives forever.
-        recordGateOutcome(this.store, new Date(nowMs).toISOString().slice(0, 10), movePct > 0);
+        recordGateOutcome(this.store, new Date(nowMs).toISOString().slice(0, 10), movePct > 0, movePct);
       }
       return false;
     });

@@ -163,6 +163,7 @@ const server = Bun.serve({
         else if (url.pathname === '/api/alerts/test') return json(await alerter.test());
         else if (url.pathname === '/api/fleet/enable') return json(fleet.enable(body));
           else if (url.pathname === '/api/fleet/disable') return json(fleet.disable());
+        else if (url.pathname === '/api/fleet/brake') return json(fleet.setEquityBrake(body.pct));
           else if (url.pathname === '/api/fleet/create') return json(fleet.create(body));
           else if (url.pathname === '/api/fleet/update') return json(fleet.update(body));
           else if (url.pathname === '/api/fleet/delete') return json(fleet.delete(body));

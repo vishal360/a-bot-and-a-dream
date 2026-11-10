@@ -1,3 +1,5 @@
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { join } from 'node:path';
 import type { Store } from './store';
 
 export type DecisionKind =
@@ -26,8 +28,12 @@ const bounded = (value: unknown, max: number) => typeof value === 'string' && va
 /** Append-only bounded log of every automated decision, its inputs and its risk checks.
  *  Local evidence, not tamper-proof: local administrators can alter the database. */
 export class DecisionJournal {
-  constructor(private store: Store, private limit = 5000) {
+  private archiveDir: string | null;
+  private archiveFailures = 0;
+  private lastArchiveError: string | null = null;
+  constructor(private store: Store, private limit = 5000, archiveDir: string | null = 'data/journal-archive') {
     if (!Number.isInteger(limit) || limit < 100 || limit > 100000) throw new Error('Invalid journal limit');
+    this.archiveDir = archiveDir;
     store.db.exec(`CREATE TABLE IF NOT EXISTS decision_journal (
       id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT NOT NULL, bot_id TEXT NOT NULL, strategy_id TEXT NOT NULL,
       strategy_hash TEXT, symbol TEXT NOT NULL, decision TEXT NOT NULL, side TEXT, quantity REAL, price REAL,
@@ -45,14 +51,38 @@ export class DecisionJournal {
     if (inputs && inputs.length > 4096) throw new Error('Journal inputs exceed 4KB');
     const checks = entry.riskChecks ? JSON.stringify(entry.riskChecks) : null;
     if (checks && checks.length > 8192) throw new Error('Journal risk checks exceed 8KB');
+    let evicted: any[] = [];
     this.store.db.transaction(() => {
       this.store.db.query(`INSERT INTO decision_journal (time,bot_id,strategy_id,strategy_hash,symbol,decision,side,quantity,price,rationale,inputs,risk_checks,order_id,error)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(entry.time, entry.botId, entry.strategyId, bounded(entry.strategyHash ?? null, 128), entry.symbol,
         entry.decision, entry.side ?? null, entry.quantity ?? null, entry.price ?? null, entry.rationale ?? null,
         inputs, checks, bounded(entry.orderId ?? null, 80), entry.error ?? null);
+      if (this.archiveDir) {
+        // Capture the rows about to leave the bounded ring: the dashboard journal is a
+        // view; the append-only archive is the durable decision record (review P0-06).
+        evicted = this.store.db.query('SELECT * FROM decision_journal WHERE id < (SELECT id FROM decision_journal ORDER BY id DESC LIMIT 1 OFFSET ?)').all(this.limit - 1) as any[];
+      }
       this.store.db.query('DELETE FROM decision_journal WHERE id < (SELECT id FROM decision_journal ORDER BY id DESC LIMIT 1 OFFSET ?)').run(this.limit - 1);
     }).immediate();
+    if (evicted.length) this.spillToArchive(evicted);
   }
+
+  /** Append-only spillway: evicted journal rows land in
+   *  data/journal-archive/journal-<YYYY-MM>.jsonl before they leave the ring. A spill
+   *  failure never breaks recording — it is counted and surfaced via archiveStatus(). */
+  private spillToArchive(rows: any[]) {
+    if (!this.archiveDir || !rows.length) return;
+    try {
+      mkdirSync(this.archiveDir, { recursive: true });
+      const month = String(rows[rows.length - 1].time ?? '').slice(0, 7) || 'unknown';
+      appendFileSync(join(this.archiveDir, `journal-${month}.jsonl`), rows.map(r => JSON.stringify(r)).join('\n') + '\n', { encoding: 'utf8' });
+    } catch (error) {
+      this.archiveFailures++;
+      this.lastArchiveError = (error as Error).message.slice(0, 200);
+    }
+  }
+
+  archiveStatus() { return { dir: this.archiveDir, failures: this.archiveFailures, lastError: this.lastArchiveError }; }
   list(options: { botId?: string; limit?: number } = {}) {
     const limit = options.limit ?? 200;
     if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid journal query limit');

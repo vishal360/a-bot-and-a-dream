@@ -108,6 +108,14 @@ export class FleetManager {
         for (const bot of this.bots.filter(b => b.status === 'running')) this.skip(bot, 'Fleet automation is disabled', snapshot, 60000);
         return;
       }
+      // Total-equity loss brake (review P0-05): unlike per-bot closing-leg stops, this
+      // sees UNREALIZED losses. Tripping blocks NEW entries fleet-wide; protective
+      // close proposals from strategies are unaffected (they reduce exposure).
+      const brake = this.checkEquityBrake(snapshot, wall);
+      if (brake.tripped) {
+        for (const bot of this.bots.filter(b => b.status === 'running')) this.skip(bot, `equity loss brake: ${brake.detail}`, snapshot, 60000);
+        return;
+      }
       for (const bot of this.bots.filter(b => b.status === 'running')) {
         await this.step(bot, snapshot);
         if (this.submitBusy) break; // One matcher submission per tick; the executor is single-flight.
@@ -283,6 +291,42 @@ export class FleetManager {
     } catch { /* sparklines must never break the fleet tick */ }
   }
 
+  /** Total-equity loss brake: a UTC-day reference equity is captured at the first tick
+   *  of each day; when the day's equity drawdown (marked open P&L included) reaches
+   *  equityLossBrakePct percent, NEW entries are blocked fleet-wide until the operator
+   *  intervenes. Day references are persisted, so a reboot cannot erase loss capacity. */
+  checkEquityBrake(snapshot: PaperStatus, wall: number): { tripped: boolean; detail: string } {
+    const pct = Number(this.store.get('equityLossBrakePct'));
+    if (!Number.isFinite(pct) || pct <= 0) return { tripped: false, detail: 'brake disabled' };
+    const day = new Date(wall).toISOString().slice(0, 10);
+    const key = `equityDayRef:${day}`;
+    // Store.get returns NULL for a missing key; Number(null) is 0, which would poison
+    // the drawdown math — the missing-reference case must be handled explicitly.
+    const storedRef = this.store.get(key);
+    let ref = storedRef == null ? Number.NaN : Number(storedRef);
+    const equity = Number(snapshot.analytics.equity);
+    if (!Number.isFinite(equity) || equity <= 0) return { tripped: false, detail: 'no usable equity' };
+    if (!Number.isFinite(ref)) { this.store.set(key, equity); ref = equity; }
+    const dropPct = ref > 0 ? (ref - equity) / ref * 100 : 0;
+    const tripped = dropPct >= pct;
+    if (tripped && !this.store.get(`equityBrakeAudit:${day}`)) {
+      this.store.set(`equityBrakeAudit:${day}`, true);
+      this.store.audit('FLEET_EQUITY_BRAKE', `UTC-day reference ${ref.toFixed(2)} USD, equity ${equity.toFixed(2)} USD, drawdown ${dropPct.toFixed(2)}% >= ${pct}%`);
+      this.journal.record({ time: new Date(wall).toISOString(), botId: 'fleet-system', strategyId: 'system', symbol: 'all',
+        decision: 'guard-pause', rationale: `total-equity loss brake tripped: day reference ${ref.toFixed(2)} USD, equity ${equity.toFixed(2)} USD, drawdown ${dropPct.toFixed(2)}% >= ${pct}% (new entries blocked; protection unaffected)` });
+    }
+    return { tripped, detail: `day reference ${ref.toFixed(2)}, equity ${equity.toFixed(2)}, drawdown ${dropPct.toFixed(2)}% (limit ${pct}%)` };
+  }
+
+  /** Operator control: 0 disables, otherwise 0.1..50 percent of UTC-day reference equity. */
+  setEquityBrake(pct: unknown) {
+    const value = Number(pct);
+    if (!Number.isFinite(value) || (value !== 0 && (value < 0.1 || value > 50))) throw new Error('pct must be 0 (disable) or 0.1..50');
+    this.store.set('equityLossBrakePct', value === 0 ? null : value);
+    this.store.audit('FLEET_EQUITY_BRAKE_SET', `equity loss brake ${value === 0 ? 'disabled' : `${value}% of UTC-day reference equity`}`);
+    return { pct: this.store.get('equityLossBrakePct') ?? 0 };
+  }
+
   // ---- Operator commands -------------------------------------------------------
 
   private requireIdleSubmit() { if (this.submitBusy) throw new Error('A bot order is in flight; retry in a moment'); }
@@ -425,6 +469,14 @@ export class FleetManager {
       }),
       sparklines: (this.store.get('fleetSparkline') ?? {}) as Record<string, { t: number; v: number }[]>,
       journal: this.journal.list({ limit: 50 }),
+      equityBrake: (() => {
+        const pct = Number(this.store.get('equityLossBrakePct')) || 0;
+        const day = new Date(this.clock.wall()).toISOString().slice(0, 10);
+        const ref = Number(this.store.get(`equityDayRef:${day}`)) || null;
+        const equity = snapshot ? Number(snapshot.analytics.equity) : null;
+        const dropPct = ref && equity !== null && ref > 0 ? Number(((ref - equity) / ref * 100).toFixed(3)) : null;
+        return { pct, ref, equity, dropPct, tripped: pct > 0 && dropPct !== null && dropPct >= pct };
+      })(),
       limits: { note: 'Closer-of-closed-leg attribution; funding and open P&L are account-level. Automation authorization does not survive restart.', maxBots: 12 }
     };
   }
