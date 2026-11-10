@@ -18,7 +18,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { replayCapture, type ReplayCapture } from '../src/lighter-evidence';
-import { framesFromCapture, replayStrategy } from '../src/backtest-replay';
+import { REPLAY_SIMULATOR_VERSION, framesFromCapture, replayStrategy } from '../src/backtest-replay';
 import { builtinStrategies } from '../src/strategies/builtin';
 import { StrategyRegistry, artifactHash } from '../src/strategies/registry';
 import { validateParams } from '../src/strategies/types';
@@ -89,15 +89,27 @@ const capital = num('capital', 10000);
 const feeBps = Math.trunc(num('fee-bps', 2));
 const leverage = Math.trunc(num('leverage', 1));
 const notionalPerOrderUsd = num('notional', Math.min(1000, capital - 1));
+const executionDelayMs = Math.trunc(num('delay-ms', 300));
+const maxDepthLevels = Math.trunc(num('depth', 5));
+const worstPriceBps = Math.trunc(num('worst-bps', 10));
+const expiresDays = Math.trunc(num('expires-days', 30));
+const maxNotionalPerOrderUsd = num('max-notional', notionalPerOrderUsd);
+if (expiresDays < 1 || expiresDays > 3650) throw new Error('Invalid --expires-days (1..3650)');
 const results = candidates.map(candidate => ({
   candidate,
   id: configId(candidate.strategyId, candidate.params),
   resolvedParams: validateParams(registry.get(candidate.strategyId), candidate.params),
   replay: replayStrategy({ registry, strategyId: candidate.strategyId, params: candidate.params, market, frames,
     staleMs: capture.manifest.staleMs, marketStats: capture.manifest.marketStats,
-    capital, feeBps, leverage, notionalPerOrderUsd }),
+    capital, feeBps, leverage, notionalPerOrderUsd, executionDelayMs, maxDepthLevels, worstPriceBps }),
 }));
-const lengths = results.map(result => result.replay.equity.length);
+// Funding-dependent strategies over a capture with zero funding samples are NOT graded:
+// missing funding is never treated as zero funding (review P0-02).
+const ineligible = results.filter(result => result.replay.fundingIneligible);
+if (ineligible.length) console.log(JSON.stringify({ fundingIneligible: ineligible.map(result => result.id), reason: 'capture has zero funding samples; funding-dependent strategies are not graded' }));
+const gradedResults = results.filter(result => !result.replay.fundingIneligible);
+if (gradedResults.length < 2) throw new Error('Fewer than 2 eligible configurations after funding-ineligibility exclusion; record a capture with funding data for funding-dependent strategies');
+const lengths = gradedResults.map(result => result.replay.equity.length);
 if (new Set(lengths).size !== 1) {
   throw new Error(`Equity curves misaligned (${results.map(result => `${result.id}: ${result.replay.equity.length}`).join(', ')}); all configs must share one capture and market`);
 }
@@ -113,7 +125,7 @@ const inputPath = join(verdictsDir, `${stamp}-input.json`);
 const verdictPath = join(verdictsDir, `${stamp}-verdict.json`);
 writeFileSync(inputPath, JSON.stringify({
   source: `${basename(captureFile)} | market ${marketSymbol} | ${frames.length} frames`,
-  configs: results.map(result => ({ id: result.id, equity: result.replay.equity })),
+  configs: gradedResults.map(result => ({ id: result.id, equity: result.replay.equity })),
 }), { encoding: 'utf8' });
 
 const isWindows = process.platform === 'win32';
@@ -150,12 +162,15 @@ const entries = (verdict.stepm_survivors as string[]).map(id => {
 });
 if (!entries.length) throw new Error('PASS verdict without StepM survivors; refusing to install an empty manifest');
 const manifest: PromotionManifest = {
-  version: 1,
+  version: 2,
   generatedAt: verdict.generatedAt,
   capture: { sha256: capture.sha256, market: marketSymbol, frames: frames.length },
   alpha: verdict.alpha,
   reps: verdict.reps,
   samples: verdict.samples,
+  simulatorVersion: REPLAY_SIMULATOR_VERSION,
+  expiresAt: new Date(Date.parse(verdict.generatedAt) + expiresDays * 86400000).toISOString(),
+  maxNotionalPerOrderUsd: maxNotionalPerOrderUsd,
   verifierSha256: sha256File(spaPath),
   verdictSha256,
   entries,

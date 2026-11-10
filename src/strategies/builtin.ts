@@ -78,6 +78,7 @@ export const meanReversionV1: Strategy = {
  *  Funding semantics remain unverified against venue settlement; sizing stays conservative. */
 export const fundingCarryV1: Strategy = {
   id: 'funding-carry-v1',
+  fundingDependent: true,
   name: 'Funding carry (perp)',
   description: 'Holds the funding-collecting side while funding exceeds the entry threshold; exits on normalization or stop. Unverified venue funding semantics.',
   params: [

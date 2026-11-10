@@ -2,8 +2,12 @@
 """Conformal calibration of agent shadow outcomes (docs/AGENT_SETUP.md).
 
 Reads the decision journal (SQLite, read-only), takes every graded shadow outcome
-for the agent personas AND the ensemble, and produces split-conformal prediction
-intervals for the signed post-horizon move (in %) at a chosen confidence level.
+for the agent personas AND the ensemble, and produces:
+
+1. Split-conformal prediction intervals for the signed post-horizon move (in %)
+   at a chosen confidence level — a description of the RETURN distribution.
+2. Probability-claim diagnostics for the confidence number itself (review P0-09):
+   Brier score and reliability bins of "claimed confidence" vs observed correctness.
 
 Method (finite-sample split-conformal, no model fitting):
   scores s_i = |y_i| (deviation of the realized signed move from zero)
@@ -12,11 +16,14 @@ Method (finite-sample split-conformal, no model fitting):
 This is the distribution-free conformal guarantee: a fresh outcome falls inside
 the interval with probability >= level, ASSUMING exchangeability of the outcomes.
 
-Honesty rules:
-  - n below MIN_SAMPLE emits a warning and the width is marked unreliable.
-  - flat outcomes (zero move) are kept: they are real observations.
-  - the artifact records the journal window it was computed from.
-  - this is a DESCRIPTION of past calibration, never a promotion input.
+Honesty rules (sharpened by the 2026-11-07 external review):
+  - The conformal interval describes the RETURN distribution. It does NOT make the
+    analyst's claimed "70% confidence" a calibrated probability. That claim is
+    diagnosed separately by the Brier score and reliability bins.
+  - n below MIN_SAMPLE emits a warning; the interval is marked unstable and the
+    Brier/reliability numbers are descriptive only.
+  - Flat outcomes (zero move) are kept: they are real observations.
+  - This is a DESCRIPTION of past shadow behavior, never a promotion input.
 
 Usage:
   research/.venv/Scripts/python.exe research/conformal_calibration.py \
@@ -30,7 +37,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
-MIN_SAMPLE = 100  # below this, the conformal width is flagged unreliable
+MIN_SAMPLE = 100  # below this, widths and probability diagnostics are flagged unreliable
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -53,6 +60,7 @@ def load_outcomes(db_path: Path):
             continue
         mark_at, mark_at_expiry = inputs.get("markAt"), inputs.get("markAtExpiry")
         direction, grade = inputs.get("direction"), inputs.get("grade")
+        confidence = inputs.get("confidence")
         if not isinstance(mark_at, (int, float)) or not isinstance(mark_at_expiry, (int, float)) or not mark_at:
             continue
         sign = 1.0 if direction == "long" else -1.0 if direction == "short" else 0.0
@@ -62,6 +70,7 @@ def load_outcomes(db_path: Path):
             "time": time,
             "direction": direction,
             "grade": grade,
+            "confidence": confidence if isinstance(confidence, (int, float)) else None,
             "movePct": move_pct,
         })
     return outcomes
@@ -76,6 +85,44 @@ def conformal_interval(moves, level):
     rank = min(n, math.ceil((n + 1) * level))
     q = scores[rank - 1]
     return q
+
+
+def reliability_bins(rows, bins=5):
+    """Claimed-confidence deciles vs observed correctness: does '70% confident' mean
+    70% of those calls were correct? Returns per-bin claimed mean, observed rate, n."""
+    usable = [r for r in rows if isinstance(r.get("confidence"), (int, float))]
+    out = []
+    per = 1.0 / bins
+    for b in range(bins):
+        lo, hi = b * per, (b + 1) * per
+        group = [r for r in usable if lo <= r["confidence"] < hi or (b == bins - 1 and lo <= r["confidence"] <= hi)]
+        if not group:
+            continue
+        claimed = sum(r["confidence"] for r in group) / len(group)
+        observed = sum(1 for r in group if r["grade"] == "correct") / len(group)
+        out.append({"bin": f"{lo:.1f}-{hi:.1f}", "n": len(group),
+                    "claimedMean": round(claimed, 4), "observedCorrectRate": round(observed, 4)})
+    return out
+
+
+def brier(rows):
+    """Brier score of the confidence-as-probability-of-correct claim (0 = perfect,
+    0.25 = always-50% guess, 1 = perfectly wrong). Descriptive below MIN_SAMPLE."""
+    usable = [r for r in rows if isinstance(r.get("confidence"), (int, float))]
+    if not usable:
+        return None
+    total = sum((r["confidence"]) ** 2 + (1 - r["confidence"]) ** 2 for r in usable
+                if r["grade"] == "correct") + \
+            sum((r["confidence"]) ** 2 + (1 - r["confidence"]) ** 2 for r in usable
+                if r["grade"] != "correct")
+    # For a binary outcome y in {0,1} and claimed probability p of y=1:
+    # y=1 -> (1-p)^2 contribution; y=0 -> p^2 contribution.
+    total = 0.0
+    for r in usable:
+        y = 1.0 if r["grade"] == "correct" else 0.0
+        p = r["confidence"]
+        total += (p - y) ** 2
+    return round(total / len(usable), 4) if usable else None
 
 
 def summarize(name, rows, level):
@@ -95,6 +142,8 @@ def summarize(name, rows, level):
         "absMoveQuantilePct": round(q, 4) if q is not None else None,
         "intervalPct": [-q, q] if q is not None else None,
         "empiricalCoverage": round(inside / n, 4) if n else None,
+        "brierScoreOfConfidenceClaim": brier(rows),
+        "reliabilityBins": reliability_bins(rows),
         "reliable": n >= MIN_SAMPLE,
         "window": {
             "first": min((r["time"] for r in rows), default=None),
@@ -119,10 +168,10 @@ def main():
 
     result = {
         "generatedAt": datetime.now(timezone.utc).isoformat(),
-        "method": "split-conformal interval on the signed post-horizon move (score = |move|), no model fitting",
+        "method": "split-conformal interval on the signed post-horizon move (score = |move|), no model fitting; Brier + reliability bins for the confidence CLAIM",
         "level": args.level,
         "minSample": MIN_SAMPLE,
-        "note": "Description of past shadow calibration only. Never a promotion input: promotions come exclusively from the Lighter-capture research gate.",
+        "note": "Description of past shadow behavior only, never a promotion input. The conformal interval describes the RETURN distribution; it does not make the claimed confidence a calibrated probability — see brierScoreOfConfidenceClaim and reliabilityBins.",
         "personas": {},
         "pooled": summarize("pooled", outcomes, args.level),
     }
@@ -132,12 +181,12 @@ def main():
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(result, indent=1) + "\n", encoding="utf-8")
-    summary = {name: (s["n"], s["hitRate"], s["intervalPct"]) for name, s in result["personas"].items()}
+    summary = {name: (s["n"], s["hitRate"], s["intervalPct"], s["brierScoreOfConfidenceClaim"]) for name, s in result["personas"].items()}
     print(f"calibration written: {out}")
     print(json.dumps(summary, indent=1))
     small = [name for name, s in result["personas"].items() if not s["reliable"]]
     if small:
-        print(f"WARNING: n < {MIN_SAMPLE} for {', '.join(small)} - widths are not yet reliable", file=sys.stderr)
+        print(f"WARNING: n < {MIN_SAMPLE} for {', '.join(small)} - widths and probability diagnostics are descriptive only", file=sys.stderr)
 
 
 if __name__ == "__main__":

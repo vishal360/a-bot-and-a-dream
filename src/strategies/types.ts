@@ -32,6 +32,10 @@ export interface Strategy {
   name: string;
   description: string;
   params: ParamSpec;
+  /** True when the strategy's economics REQUIRE funding cash flows. Replays over
+   *  captures with zero funding samples mark such strategies ineligible (missing
+   *  funding is never treated as zero funding). */
+  fundingDependent?: boolean;
   evaluate(ctx: StrategyContext): StrategyProposal;
 }
 

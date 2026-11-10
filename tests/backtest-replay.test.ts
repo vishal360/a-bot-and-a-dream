@@ -1,4 +1,4 @@
-import { test, expect } from 'bun:test';
+﻿import { test, expect } from 'bun:test';
 import { replayStrategy, framesFromCapture } from '../src/backtest-replay';
 import { StrategyRegistry } from '../src/strategies/registry';
 import { breakoutV1 } from '../src/strategies/builtin';
@@ -34,17 +34,21 @@ const run = (frames: any[], overrides: any = {}) => {
     market, frames, staleMs: 5000, marketStats: false, capital: 10000, feeBps: 2, leverage: 2, notionalPerOrderUsd: 1000, ...overrides });
 };
 
-test('replay fills on the bar after the signal and books the round trip', () => {
+test('replay fills on the bar after the signal, consuming only DISPLAYED depth', () => {
   const result = run(captureFrames());
   expect(result.kind).toBe('recorded-feed-replay');
   expect(result.trades).toHaveLength(1);
   const trade = result.trades[0];
-  // The breakout signal appears at mid 102.1; the fill must wait for the NEXT book and cross the spread.
+  // The breakout signal appears at mid 102.1; the fill waits for arrival (decision +
+  // 300ms lands on the NEXT book update, 1000ms later) and crosses the spread.
   expect(trade.side).toBe('long');
   expect(trade.entry).toBe(102.2);
   expect(trade.exit).toBe(97);
   expect(trade.reason).toContain('stop');
-  expect(trade.quantity).toBe(Math.floor(1000 / 102.2 * 10000) / 10000);
+  // The displayed ask only holds 5.0 units: the IOC consumes what EXISTS (5.0) and
+  // cancels the remainder â€” unlimited top-of-book liquidity is a backtest fantasy.
+  expect(trade.quantity).toBe(5);
+  expect(result.execution.partials).toBeGreaterThanOrEqual(1);
   const expectedFees = (102.2 * trade.quantity + 97 * trade.quantity) * 2 / 10000;
   expect(result.feesUsd).toBeCloseTo(expectedFees, 8);
   expect(result.netPnl).toBeCloseTo((97 - 102.2) * trade.quantity - expectedFees, 8);
@@ -52,6 +56,7 @@ test('replay fills on the bar after the signal and books the round trip', () => 
   expect(result.maxDrawdown).toBeGreaterThan(0);
   expect(result.equity.length).toBeGreaterThan(40);
   expect(result.warnings.some(w => w.includes('bounded capture prefix'))).toBe(true);
+  expect(result.warnings.some(w => w.includes('Arrival-time execution'))).toBe(true);
 });
 
 test('flat prices never trade and warmup windows are respected', () => {
@@ -69,12 +74,13 @@ test('replay validates inputs and frame ordering fail-closed', () => {
   expect(() => run(frames, { capital: 50 })).toThrow('capital');
   expect(() => run(frames, { notionalPerOrderUsd: 20000 })).toThrow('notionalPerOrderUsd');
   expect(() => run(frames, { leverage: 25 })).toThrow('leverage');
-  expect(() => run([], {})).toThrow('1–2000');
+  expect(() => run([], {})).toThrow('2000 recorded frames');
   const reordered = [...frames.slice().reverse()];
   expect(() => run(reordered)).toThrow('receive order');
   const bad = frames.map((f, i) => i === 3 ? { ...f, raw: f.raw.replace('order_book', 'bogus_frame') } : f);
   // Unknown channels for the target market are skipped, not fatal.
   expect(run(bad).frames).toBe(frames.length);
+  expect(() => run(frames, { executionDelayMs: 70000 })).toThrow('executionDelayMs');
 });
 
 test('framesFromCapture maps capture records for replay', () => {

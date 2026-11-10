@@ -26,12 +26,18 @@ export type PromotedEntry = {
 };
 
 export type PromotionManifest = {
-  version: 1;
+  version: 2;
   generatedAt: string;
   capture: { sha256: string; market: string; frames: number };
   alpha: number;
   reps: number;
   samples: number;
+  /** The replay simulator version that produced the evidence (review P0-10). */
+  simulatorVersion: string;
+  /** The authorization EXPIRES: a promotion is a review window, not a permanent right. */
+  expiresAt: string;
+  /** Maximum approved per-order notional for promoted bots (capital envelope). */
+  maxNotionalPerOrderUsd: number;
   verifierSha256: string;
   verdictSha256: string;
   entries: PromotedEntry[];
@@ -67,7 +73,7 @@ export function manifestErrors(raw: unknown): string[] {
   const errors: string[] = [];
   const m = raw as Partial<PromotionManifest> | null;
   if (!m || typeof m !== 'object') return ['manifest is not an object'];
-  if (m.version !== 1) errors.push('unsupported manifest version');
+  if (m.version !== 2) errors.push('unsupported manifest version');
   if (typeof m.generatedAt !== 'string' || Number.isNaN(Date.parse(m.generatedAt))) errors.push('invalid generatedAt');
   const capture = m.capture as PromotionManifest['capture'] | undefined;
   if (!capture || typeof capture !== 'object' || !HEX64.test(String(capture.sha256)) ||
@@ -78,6 +84,9 @@ export function manifestErrors(raw: unknown): string[] {
   if (typeof m.samples !== 'number' || !Number.isSafeInteger(m.samples) || m.samples < 101) errors.push('insufficient samples');
   if (!HEX64.test(String(m.verifierSha256))) errors.push('invalid verifierSha256');
   if (!HEX64.test(String(m.verdictSha256))) errors.push('invalid verdictSha256');
+  if (typeof m.simulatorVersion !== 'string' || !m.simulatorVersion) errors.push('invalid simulatorVersion');
+  if (typeof m.expiresAt !== 'string' || Number.isNaN(Date.parse(m.expiresAt))) errors.push('invalid expiresAt');
+  if (m.maxNotionalPerOrderUsd !== undefined && (!Number.isFinite(m.maxNotionalPerOrderUsd) || m.maxNotionalPerOrderUsd < 10)) errors.push('invalid maxNotionalPerOrderUsd');
   if (!Array.isArray(m.entries) || !m.entries.length) { errors.push('entries must be a non-empty array'); return errors; }
   const seen = new Set<string>();
   m.entries.forEach((entry, index) => {
@@ -114,6 +123,12 @@ export class PromotionGate {
     if (manifest.verifierSha256 !== currentVerifierSha256) {
       return PromotionGate.refusing([`verifier changed since promotion (manifest ${manifest.verifierSha256.slice(0, 12)}, current ${currentVerifierSha256.slice(0, 12)}); re-run scripts/research-promote.ts`]);
     }
+    // A promotion is a review window, not a permanent right (review P0-01): expired
+    // authorization must never admit new exposure. Protective reductions are unaffected —
+    // close proposals never required alpha authorization in the first place.
+    if (Date.parse(manifest.expiresAt) < Date.now()) {
+      return PromotionGate.refusing([`promotion expired at ${manifest.expiresAt}; re-run scripts/research-promote.ts (protective reductions remain allowed — closes never needed alpha authorization)`]);
+    }
     return new PromotionGate('strict', manifest);
   }
 
@@ -133,7 +148,7 @@ export class PromotionGate {
       entry.strategyId === strategy.id && entry.artifactHash === artifact && canonicalParams(entry.params) === canonical);
   }
 
-  describe(): { mode: PromotionMode; reasons?: string[]; generatedAt?: string; capture?: PromotionManifest['capture']; alpha?: number; reps?: number; samples?: number; promoted?: { strategyId: string; spaPvalue: number }[] } {
+  describe(): { mode: PromotionMode; reasons?: string[]; generatedAt?: string; capture?: PromotionManifest['capture']; alpha?: number; reps?: number; samples?: number; simulatorVersion?: string; expiresAt?: string; expired?: boolean; maxNotionalPerOrderUsd?: number; promoted?: { strategyId: string; spaPvalue: number }[] } {
     if (this.mode === 'strict' && this.manifest) {
       return {
         mode: this.mode,
@@ -142,6 +157,10 @@ export class PromotionGate {
         alpha: this.manifest.alpha,
         reps: this.manifest.reps,
         samples: this.manifest.samples,
+        simulatorVersion: this.manifest.simulatorVersion,
+        expiresAt: this.manifest.expiresAt,
+        expired: Date.parse(this.manifest.expiresAt) < Date.now(),
+        maxNotionalPerOrderUsd: this.manifest.maxNotionalPerOrderUsd,
         promoted: this.manifest.entries.map(entry => ({ strategyId: entry.strategyId, spaPvalue: entry.spaPvalue })),
       };
     }

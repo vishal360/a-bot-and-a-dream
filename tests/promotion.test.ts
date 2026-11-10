@@ -25,7 +25,10 @@ function resolvedDefaults(strategy: Strategy): Record<string, number> {
 
 function manifestFor(strategy: Strategy, overrides: any = {}): PromotionManifest {
   return {
-    version: 1, generatedAt: '2026-10-28T00:00:00.000Z',
+    version: 2, generatedAt: '2026-10-28T00:00:00.000Z',
+    simulatorVersion: 'replay-v2-arrival-depth-funding',
+    expiresAt: '2999-01-01T00:00:00.000Z',
+    maxNotionalPerOrderUsd: 1000,
     capture: { sha256: 'b'.repeat(64), market: 'BTC', frames: 1500 },
     alpha: 0.05, reps: 2000, samples: 1200,
     verifierSha256: VERIFIER, verdictSha256: 'c'.repeat(64),
@@ -45,7 +48,9 @@ test('canonical params and config ids are order-stable and reject junk', () => {
 test('manifest validation fails closed on every corrupted field', () => {
   const strategy = stubStrategy();
   expect(manifestErrors(manifestFor(strategy))).toEqual([]);
-  expect(manifestErrors({ ...manifestFor(strategy), version: 2 }).join(' ')).toContain('version');
+  // v1 manifests are unsupported once v2 enforcement exists: an old artifact must not
+  // grandfather weaker evidence past the gate.
+  expect(manifestErrors({ ...manifestFor(strategy), version: 1 }).join(' ')).toContain('version');
   expect(manifestErrors({ ...manifestFor(strategy), alpha: 1.5 }).join(' ')).toContain('alpha');
   expect(manifestErrors({ ...manifestFor(strategy), entries: [] }).join(' ')).toContain('entries');
   expect(manifestErrors({ ...manifestFor(strategy), verifierSha256: 'zz' }).join(' ')).toContain('verifierSha256');
