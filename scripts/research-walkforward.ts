@@ -16,6 +16,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 
 import { join, resolve } from 'node:path';
 import { replayKlines, type Kline } from '../src/backtest-klines';
 import { builtinStrategies } from '../src/strategies/builtin';
+import { researchStrategies } from '../src/strategies/research';
 import { StrategyRegistry } from '../src/strategies/registry';
 import { validateParams } from '../src/strategies/types';
 import { configId } from '../src/promotion';
@@ -37,7 +38,7 @@ const num = (name: string, fallback: number): number => {
 };
 
 const registry = new StrategyRegistry();
-for (const strategy of builtinStrategies) registry.register(strategy);
+for (const strategy of [...builtinStrategies, ...researchStrategies]) registry.register(strategy);
 
 const historyDir = resolve(arg('history') ?? 'data/history/binance-spot-BTCUSDT-1s');
 const metaPath = join(historyDir, 'meta.json');

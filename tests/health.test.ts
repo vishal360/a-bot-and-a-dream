@@ -32,6 +32,18 @@ const harness = (options: Record<string, unknown> = {}) => {
   return { s, journal, monitor, root, setNow: (ms: number) => { now = ms; }, close: () => s.db.close() };
 };
 
+test('retention pressure becomes a durable health alert rather than silent evidence deletion', async () => {
+  let blocked = true;
+  const { monitor, journal, close } = harness({ durabilityStatus: () => ({ archive: { retentionBlocked: blocked }, backup: { diskPressure: false } }) });
+  try {
+    const first = await monitor.tick();
+    expect(first.find(x => x.check === 'durability-retention')?.state).toBe('alert');
+    expect(journal.historySinceId(0, 100).some(x => x.decision === 'health-alert' && x.rationale.includes('Sole-copy'))).toBe(true);
+    blocked = false;
+    expect((await monitor.tick()).find(x => x.check === 'durability-retention')?.state).toBe('ok');
+  } finally { close(); }
+});
+
 const alertsIn = (journal: DecisionJournal) => journal.list({ limit: 100 }).filter(e => e.decision === 'health-alert');
 
 test('capture-stall: streaming + stale newest capture alerts; fresh capture and non-streaming feeds stay quiet', async () => {

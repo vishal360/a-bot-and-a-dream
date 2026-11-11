@@ -1,6 +1,8 @@
 # Project Roadmap — living status board
 
-Updated: 2026-10-28. This is the operator-facing tracker: what is done, what is
+Updated: 2026-11-11. **Current external-review implementation status supersedes historical claims below:** see [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md). Single-capture SPA is screen-only and cannot install promotions; existing artifacts are paper allowlists, never independent research/live approval. The deferred 24h observation has NOT been completed in this checkout. Funding-rate accrual remains diagnostic, not verified settlement economics.
+
+This is the operator-facing tracker: what is done, what is
 in progress, what is parked and why, and what was deliberately removed. The
 evidence-gate detail behind "done" claims lives in [AUTOMATION_ROADMAP.md](AUTOMATION_ROADMAP.md);
 strategy semantics live in [FLEET.md](FLEET.md). Update this file every increment.
@@ -24,7 +26,7 @@ future project.
 | Strict acceptance clock (loosened tolerance removed) | scripts/lighter-acceptance-clock.ts | Matches declared 2s policy |
 | Word operations guide (living deliverable) | Documents/A Bot and a Dream - Terminal Guide.docx | Regenerate per increment |
 | **Research lane v1: SPA/StepM multiplicity gate** | research/spa_verify.py | arch-backed; self-tested (noise→no edge, edge→p=0.0) |
-| **Research lane v2: SPA verdicts wired into strategy promotion** | src/promotion.ts + scripts/research-promote.ts | Fleet gate ratchets to strict on the first PASS manifest (research/promotions.json); FAIL verdicts install nothing |
+| **Research screening and paper configuration allowlists** | src/promotion.ts + scripts/research-promote.ts | Single-capture PASS/FAIL archives screens only; never installs manifests. Existing valid allowlists constrain paper configs but do not prove independent research approval |
 | **Agent sub-account accounting** | src/paper-ledger.ts + src/paper.ts | agent-* fills, Paper.agentOrder(), analytics.agents attribution, session-only agentEnabled latch + agentAllocationPct envelope (fail-closed at 0%) |
 | **Durable data engine (continuous capture archive)** | src/data-engine.ts + rolling captures in lighter-stream.ts | Capacity-limited captures roll mid-connection; terminal captures export to data/archive/ with JSONL index and keepDays/keepBytes retention |
 | **Historical backfill + walk-forward screen (research lane v3)** | src/backtest-klines.ts + src/walkforward.ts + scripts/download-history.ts + scripts/research-walkforward.ts | Public 1s klines (no key) screen candidates: SPA on train, untouched holdout decides; can NEVER promote (Lighter-capture-only by design) |

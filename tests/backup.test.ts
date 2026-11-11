@@ -45,7 +45,7 @@ test('a backup produces a local snapshot, a Drive copy, and leaves the live data
     const result = await backup.run();
     expect(result.ok).toBe(true);
     expect(result.file).toBeDefined();
-    const localFiles = readdirSync(join(root, 'backups'));
+    const localFiles = readdirSync(join(root, 'backups')).filter(f => f.endsWith('.sqlite'));
     expect(localFiles).toHaveLength(1);
     expect(existsSync(join(root, 'drive-backups', localFiles[0]))).toBe(true);
     // The snapshot is a real database containing the evidence.
@@ -60,7 +60,7 @@ test('a backup produces a local snapshot, a Drive copy, and leaves the live data
   } finally { close(); }
 });
 
-test('keep-count rotation prunes old snapshots locally and on the Drive', async () => {
+test('keep-count never deletes sole local evidence without independent verification', async () => {
   const { backup, root, bump, dbPath, close } = harness({ keep: 3 });
   try {
     makeSourceDb(dbPath);
@@ -69,8 +69,10 @@ test('keep-count rotation prunes old snapshots locally and on the Drive', async 
       expect(result.ok).toBe(true);
       bump(3600 * 1000);
     }
-    expect(readdirSync(join(root, 'backups'))).toHaveLength(3);
-    expect(readdirSync(join(root, 'drive-backups'))).toHaveLength(3);
+    expect(readdirSync(join(root, 'backups')).filter(f => f.endsWith('.sqlite'))).toHaveLength(5);
+    expect(readdirSync(join(root, 'drive-backups')).filter(f => f.endsWith('.sqlite'))).toHaveLength(5);
+    expect(backup.status().retentionBlocked).toBe(true);
+    expect(backup.status().verification.remoteVerified).toBe(false);
   } finally { close(); }
 });
 
@@ -93,7 +95,7 @@ test('a corrupt source fails without producing a snapshot', async () => {
     writeFileSync(dbPath, 'this is not a sqlite database at all');
     const result = await backup.run();
     expect(result.ok).toBe(false);
-    expect(existsSync(join(root, 'backups')) ? readdirSync(join(root, 'backups')).length : 0).toBe(0);
+    expect(existsSync(join(root, 'backups')) ? readdirSync(join(root, 'backups')).filter(f => f.endsWith('.sqlite')).length : 0).toBe(0);
   } finally { close(); }
 });
 
@@ -107,7 +109,7 @@ test('an unmountable Drive directory is a loud failure: local snapshot kept, ale
     const result = await backup.run();
     expect(result.ok).toBe(false);
     expect(result.error).toContain('Drive copy failed');
-    expect(readdirSync(join(root, 'backups'))).toHaveLength(1); // the local snapshot survived
+    expect(readdirSync(join(root, 'backups')).filter(f => f.endsWith('.sqlite'))).toHaveLength(1); // the local snapshot survived
     expect(journal.list({ limit: 10 }).some(e => e.decision === 'health-alert')).toBe(true);
   } finally { close(); }
 });
@@ -119,7 +121,7 @@ test('driveDir: null runs local-only by design (no copy attempted, no failure)',
     const result = await backup.run();
     expect(result.ok).toBe(true);
     expect(backup.status().driveDir).toBeNull();
-    expect(readdirSync(join(root, 'backups'))).toHaveLength(1);
+    expect(readdirSync(join(root, 'backups')).filter(f => f.endsWith('.sqlite'))).toHaveLength(1);
     expect(journal.list({ limit: 10 }).some(e => e.decision === 'health-alert')).toBe(false);
   } finally { close(); }
 });

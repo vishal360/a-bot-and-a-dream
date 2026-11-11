@@ -3,7 +3,7 @@ import type { DecisionJournal } from './journal';
 import { existsSync, readFileSync } from 'node:fs';
 import { buildProposal, validateProposalFields, validateStoredProposal, type AgentProposal } from './agent-contract';
 import { ensembleDirection } from './agent-ensemble';
-import { AgentPromotion, recordGateOutcome } from './agent-promotion';
+import { AgentPromotion, loadGateStats, recordGateOutcome } from './agent-promotion';
 
 export type AgentMarketContext = {
   symbol: string; mark: number; fundingRate: number | null; equity: number | null; time: string;
@@ -293,10 +293,14 @@ export class AgentRuntime {
   private expireShadows(): number {
     const nowMs = this.nowMs();
     const marks = new Map(this.context().map(m => [m.symbol, m.mark]));
-    let closed = 0;
-    closed += this.expireList('agentShadowPending', 'agent-ensemble', marks, nowMs);
-    closed += this.expireList('agentPersonaPending', undefined, marks, nowMs);
-    return closed;
+    // Grading, gate counters and pending removal must commit together: a crash must
+    // not count the same prediction twice on restart.
+    return this.store.db.transaction(() => {
+      let closed = 0;
+      closed += this.expireList('agentShadowPending', 'agent-ensemble', marks, nowMs);
+      closed += this.expireList('agentPersonaPending', undefined, marks, nowMs);
+      return closed;
+    }).immediate();
   }
 
   /** Grade one pending list. `fixedBotId` set = ensemble list (all outcomes under
@@ -306,16 +310,31 @@ export class AgentRuntime {
     if (!pending.length) return 0;
     const remaining = pending.filter(p => {
       if (p.expiresAtMs > nowMs) return true;
-      const markNow = marks.get(p.symbol);
-      if (markNow === undefined) return true; // no fresh mark yet: retry next tick
       const botId = fixedBotId ?? p.agentId;
+      const lagMs = nowMs - p.expiresAtMs;
+      // Fixed 60s grading tolerance. Beyond it, censor rather than silently change
+      // a prediction's horizon. This is a label policy, never a position exit.
+      if (lagMs > 60000) {
+        this.journal.record({ time: new Date(nowMs).toISOString(), botId, strategyId: 'agent-llm', symbol: p.symbol,
+          decision: 'agent-reject', rationale: 'Shadow outcome censored: expiry endpoint exceeded 60s grading tolerance; excluded from accuracy and gate statistics',
+          inputs: { targetExpiry: new Date(p.expiresAtMs).toISOString(), actualLabelTime: new Date(nowMs).toISOString(), labelLagMs: lagMs, grade: 'censored' } });
+        return false;
+      }
+      const markNow = marks.get(p.symbol);
+      if (markNow === undefined) return true; // wait only within the fixed tolerance
       const signed = p.direction === 'long' ? 1 : -1;
       const movePct = signed * (markNow - p.markAt) / p.markAt * 100;
+      // Migrate/seed prior evidence before adding this outcome, otherwise an initial
+      // direct grade could eclipse historical evidence or seed itself twice.
+      if (fixedBotId === 'agent-ensemble') {
+        const prior = loadGateStats(this.store, this.journal);
+        if (prior.integrityError) throw new Error(prior.integrityError);
+      }
       this.journal.record({
         time: new Date(nowMs).toISOString(), botId, strategyId: 'agent-llm', symbol: p.symbol,
         decision: 'agent-outcome',
         rationale: `${p.direction} ${p.symbol}: mark ${p.markAt.toFixed(2)} -> ${markNow.toFixed(2)} (${movePct >= 0 ? '+' : ''}${movePct.toFixed(3)}%) => ${movePct > 0 ? 'direction correct' : movePct < 0 ? 'direction wrong' : 'flat'} (shadow, no orders)`.slice(0, 500),
-        inputs: { markAt: p.markAt, markAtExpiry: markNow, direction: p.direction, confidence: p.confidence, agents: p.agentId, grade: movePct > 0 ? 'correct' : movePct < 0 ? 'wrong' : 'flat' },
+        inputs: { markAt: p.markAt, markAtExpiry: markNow, direction: p.direction, confidence: p.confidence, agents: p.agentId, grade: movePct > 0 ? 'correct' : movePct < 0 ? 'wrong' : 'flat', targetExpiry: new Date(p.expiresAtMs).toISOString(), actualLabelTime: new Date(nowMs).toISOString(), labelLagMs: lagMs },
         riskChecks: [{ check: 'shadow-mode', pass: true, detail: 'no orders; journal-only' }],
       });
       if (fixedBotId === 'agent-ensemble') {

@@ -17,6 +17,7 @@ import { existsSync, readdirSync, readFileSync, mkdirSync, writeFileSync } from 
 import { join, resolve } from 'node:path';
 import { replayKlines } from '../src/backtest-klines';
 import { builtinStrategies } from '../src/strategies/builtin';
+import { researchStrategies } from '../src/strategies/research';
 import { StrategyRegistry } from '../src/strategies/registry';
 import { configId } from '../src/promotion';
 import { splitByBars, splitWalkForward, walkForwardVerdict } from '../src/walkforward';
@@ -37,7 +38,7 @@ const num = (name: string, fallback: number): number => {
 };
 
 const registry = new StrategyRegistry();
-for (const strategy of builtinStrategies) registry.register(strategy);
+for (const strategy of [...builtinStrategies, ...researchStrategies]) registry.register(strategy);
 
 const archiveRoot = resolve(arg('archive') ?? 'data/archive');
 const driveRoot = resolve(arg('drive-archive') ?? 'G:/My Drive/ABAD-archive');
@@ -157,7 +158,8 @@ try {
   // not a crash: the corpus needs more recording days (or denser buckets).
   insufficient(`walk-forward split refused: ${(error as Error).message}. Keep recording and rerun as days accumulate.`);
 }
-const candidates = builtinStrategies.map(strategy => ({ strategyId: strategy.id, params: {} as Record<string, number> }));
+const candidates = (args.includes('--include-research') ? [...builtinStrategies, ...researchStrategies] : builtinStrategies)
+  .map(strategy => ({ strategyId: strategy.id, params: {} as Record<string, number> }));
 const runLane = (series: typeof klines) => candidates.map(candidate => {
   const result = replayKlines({ registry, strategyId: candidate.strategyId, params: candidate.params,
     klines: series, symbol: market, capital, feeBps, notionalPerOrderUsd: notional, source: `own-captures ${market}` });
@@ -195,7 +197,7 @@ const report = {
   holdout: holdoutResults.map(result => ({ id: result.id, strategyId: result.candidate.strategyId, netPnl: result.result.netPnl, trades: result.result.trades.length, maxDrawdown: result.result.maxDrawdown })),
   verdict,
   canPromote: false,
-  note: 'A PASS here is REAL venue evidence (our own Lighter captures) but never installs research/promotions.json itself; run scripts/research-promote.ts over the holdout captures to promote.',
+  note: 'Screening on quote-derived target-venue bars, not execution proof or research approval. No screen installs promotions, including research-promote.ts; independent holdout provenance, complete costs and prospective evidence remain required.',
 };
 const reportPath = join(verdictsDir, `${stamp}-own-captures.json`);
 writeFileSync(reportPath, JSON.stringify(report, null, 1) + '\n');

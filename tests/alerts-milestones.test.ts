@@ -1,4 +1,4 @@
-﻿import { test, expect } from 'bun:test';
+import { test, expect } from 'bun:test';
 import { Store } from '../src/store';
 import { DecisionJournal } from '../src/journal';
 import { TelegramAlerter, type AlertGateStatus } from '../src/alerts';
@@ -33,6 +33,8 @@ test('gate milestones fire once at n>=100 and once at eligibility, then latch', 
     status = gate(101, 56);
     await alerter.tick();
     expect(sent.filter(t => t.includes('reached 101 graded'))).toHaveLength(1);
+    expect(sent[0]).toContain('Sample count alone does not establish');
+    expect(sent[0]).not.toContain('now statistically reliable');
     await alerter.tick(); // latched: no repeat
     expect(sent).toHaveLength(1);
     status = gate(120, 70, true);

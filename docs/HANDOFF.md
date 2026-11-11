@@ -1,6 +1,10 @@
 # HANDOFF — Agent Work Log & Context ("A Bot and a Dream")
 
-Last updated: 2026-10-28 (AutoClaw session)
+Last updated: 2026-11-11 (DeepSeek Harness continuation)
+
+## Current continuation status — supersedes stale state below
+
+Source audited from GitHub HEAD 58e08c8 in a separate workspace clone. See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for code-reviewed previous work, repairs, verification and remaining gates. No production checkout/state/credentials touched; no trading enabled. Baseline check: typecheck passed; 355 tests passed, 13 failed. Repairs cover replay execution/accounting, screen-only promotion, reduction-safe latched equity brake, transactional durable decision history, gate-stat migration, atomic grading and delayed-label censorship, and isolated agent test credentials. Historical state/paths/claims below are retained as context, not present operational evidence. No push/commit made in this continuation yet.
 Maintainer protocol: EVERY work session appends a dated entry to "Session log"
 (section 3) and refreshes "Current state" (section 2) before finishing.
 

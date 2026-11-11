@@ -12,10 +12,12 @@ of 1-second candles today.
    Lighter replay — a proposal evaluated on candle *i* executes at candle
    *i+1*'s open. Candidates must survive the same multiplicity-corrected
    SPA/StepM verifier used for promotions.
-2. **Prove on Lighter.** Only a PASS verdict from a **Lighter capture**
-   (`scripts/research-promote.ts`) can ever install `research/promotions.json`
-   and make a config registerable. The walk-forward script hard-codes
-   `canPromote: false` — historical data can screen, never promote.
+2. **Target-venue screens are still screens.** `scripts/research-promote.ts`
+   now archives single-capture SPA results without installing any manifest, even
+   on PASS. A genuine independent-holdout/forward approval protocol remains
+   unimplemented; no screen can claim research or live approval. Existing
+   manifests only restrict paper configurations. The walk-forward script also
+   hard-codes `canPromote: false`. See [current status](IMPLEMENTATION_STATUS.md).
 
 Why: the history is a different venue (fees, spreads, liquidity, funding
 cadence), replayed with an honestly weaker market model (synthetic two-quote

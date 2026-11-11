@@ -1,4 +1,5 @@
 import { test, expect } from 'bun:test';
+import { REPLAY_SIMULATOR_VERSION } from '../src/backtest-replay';
 import { PromotionGate, canonicalParams, configId, manifestErrors, type PromotionManifest } from '../src/promotion';
 import { FleetManager, type FleetFeed, type FleetPaper } from '../src/fleet';
 import { DecisionJournal } from '../src/journal';
@@ -26,7 +27,7 @@ function resolvedDefaults(strategy: Strategy): Record<string, number> {
 function manifestFor(strategy: Strategy, overrides: any = {}): PromotionManifest {
   return {
     version: 2, generatedAt: '2026-10-28T00:00:00.000Z',
-    simulatorVersion: 'replay-v2-arrival-depth-funding',
+    simulatorVersion: REPLAY_SIMULATOR_VERSION,
     expiresAt: '2999-01-01T00:00:00.000Z',
     maxNotionalPerOrderUsd: 1000,
     capture: { sha256: 'b'.repeat(64), market: 'BTC', frames: 1500 },
@@ -43,6 +44,9 @@ test('canonical params and config ids are order-stable and reject junk', () => {
   expect(configId('breakout-v1', {})).toBe(configId('breakout-v1', {}));
   expect(configId('breakout-v1', {})).not.toBe(configId('breakout-v1', { stopPct: 0.006 }));
   expect(() => configId('BAD ID', {})).toThrow();
+  // __proto__ must remain an own parameter, not disappear via object assignment.
+  expect(canonicalParams(JSON.parse('{"__proto__":1}'))).toBe('{"__proto__":1}');
+  expect(configId('breakout-v1', JSON.parse('{"__proto__":1}'))).not.toBe(configId('breakout-v1', {}));
 });
 
 test('manifest validation fails closed on every corrupted field', () => {
@@ -140,7 +144,8 @@ test('strict gate: only the promoted config can be created', async () => {
 test('a manifest installed after bots exist refuses them at tick with a journaled skip', async () => {
   const promoted = stubStrategy();
   const { store, fleet, submitted, advance, paper, feed } = harness(null);
-  fleet.create({ slug: 'legacy', strategyId: 'breakout-v1', symbol: 'BTC' });
+  // Use an actual opening proposal: protective holds/closes do not require alpha approval.
+  fleet.create({ slug: 'legacy', strategyId: 'always-open', symbol: 'BTC', params: { threshold: 0.9 } });
   fleet.startBot({ id: 'fleet-legacy' });
   fleet.enable({ confirm: 'ENABLE PAPER AUTOMATION' });
   expect(submitted).toHaveLength(0); // pre-manifest tick below only warms windows

@@ -102,6 +102,99 @@ test('maker-conservative: a resting limit blocks new decisions (one working orde
   expect(result.warnings.some(w => w.includes('expired unfilled'))).toBe(true);
 });
 
+for (const side of ['buy', 'sell'] as const) {
+  test(`maker ${side}: partial closes preserve entry basis, signed context and allocated fees`, () => {
+    let step = 0;
+    const seen: StrategyContext[] = [];
+    const strategy: Strategy = { id: 'maker-partial', name: 'Partial', description: 'test', params: [],
+      evaluate(ctx) {
+        seen.push({ ...ctx, window: [...ctx.window] });
+        const i = step++;
+        if (i === 0) return { action: 'open', side, rationale: 'enter' };
+        if (i === 1 || i === 2) return { action: 'close', fraction: 0.5, rationale: 'partial' };
+        return { action: 'hold', rationale: 'wait' };
+      } };
+    const registry = new StrategyRegistry(); registry.register(strategy);
+    const result = replayKlines({ registry, strategyId: strategy.id, params: {},
+      klines: [k(0, 100), k(1, 100, 99, 101), k(2, 110, 99, 111), k(3, 120, 109, 121), k(4, 130)],
+      symbol: 'BTC', capital: 10000, feeBps: 10, notionalPerOrderUsd: 1000, source: 'test', executionModel: 'maker-conservative' });
+    const sign = side === 'buy' ? 1 : -1;
+    expect(seen[1].position!.quantity).toBe(sign * 10);
+    expect(seen[2].position!.quantity).toBe(sign * 5);
+    expect(seen[3].position!.quantity).toBe(sign * 2.5);
+    expect(seen[3].position!.average).toBe(100);
+    expect(result.trades.map(t => t.quantity)).toEqual([5, 2.5, 2.5]);
+    expect(result.trades.every(t => t.entry === 100)).toBe(true);
+    // Actual limits stay at 100/110; terminal taker exit pays the adverse half-spread.
+    const terminalExit = 130 * (1 - sign * 2 / 20000);
+    const terminalFee = terminalExit * 2.5 * 10 / 10000;
+    expect(result.trades[0].exit).toBe(100);
+    expect(result.trades[1].exit).toBe(110);
+    expect(result.trades[2].exit).toBeCloseTo(terminalExit, 10);
+    expect(result.trades[0].pnl).toBeCloseTo(-1, 10);
+    expect(result.trades[1].pnl).toBeCloseTo(sign * 25 - 0.275 - 0.25, 10);
+    expect(result.trades[2].pnl).toBeCloseTo(sign * (terminalExit - 100) * 2.5 - terminalFee - 0.25, 10);
+    expect(result.feesUsd).toBeCloseTo(1.775 + terminalFee, 10);
+    expect(result.netPnl).toBeCloseTo(sign * (25 + (terminalExit - 100) * 2.5) - 1.775 - terminalFee, 9);
+    expect(result.trades.reduce((s, t) => s + t.pnl, 0)).toBeCloseTo(result.netPnl, 9);
+    expect(result.equity.at(-1)).toBeCloseTo(10000 + result.netPnl, 9);
+  });
+}
+
+test('maker expired close allocates remaining entry fee into trade pnl and terminal equity', () => {
+  const result = harness([
+    { action: 'open', side: 'buy', rationale: 'enter' },
+    { action: 'close', fraction: 1, rationale: 'exit' },
+  ], [k(0, 100), k(1, 100, 99, 100), k(2, 100), k(3, 100)],
+  { executionModel: 'maker-conservative', limitTtlCandles: 1, feeBps: 10 });
+  expect(result.trades).toHaveLength(1);
+  expect(result.trades[0].reason).toBe('limit expired: taker exit');
+  const exit = 100 * (1 - 2 / 20000);
+  const pnl = (exit - 100) * 10 - 1 - exit * 10 * 10 / 10000;
+  expect(result.trades[0].exit).toBeCloseTo(exit, 10);
+  expect(result.trades[0].pnl).toBeCloseTo(pnl, 10);
+  expect(result.netPnl).toBeCloseTo(pnl, 9);
+  expect(result.equity.at(-1)).toBeCloseTo(10000 + pnl, 9);
+  expect(result.maxDrawdown).toBeCloseTo(-pnl / 10000, 12);
+});
+
+test('maker cancels resting entry across an explicit gap and resets feature warmup', () => {
+  const lengths: number[] = [];
+  const strategy: Strategy = { id: 'maker-gap', name: 'Gap', description: 'test', params: [],
+    evaluate(ctx) { lengths.push(ctx.window.length); return ctx.window.length === 2
+      ? { action: 'open', side: 'buy', rationale: 'warm' } : { action: 'hold', rationale: 'wait' }; } };
+  const registry = new StrategyRegistry(); registry.register(strategy);
+  const klines = [k(0, 100), k(1, 100), k(2, 100, 90, 110)];
+  klines[1].closeTime -= 100;
+  const result = replayKlines({ registry, strategyId: strategy.id, params: {}, klines, symbol: 'BTC',
+    capital: 10000, feeBps: 0, notionalPerOrderUsd: 1000, source: 'test', executionModel: 'maker-conservative' });
+  expect(lengths).toEqual([1, 2, 1]);
+  expect(result.trades).toHaveLength(0);
+  expect(result.warnings.some(w => w.includes('explicit gap'))).toBe(true);
+});
+
+test('maker gap cancels resting exit without inventing a fill or forced gap liquidation', () => {
+  const klines = [k(0, 100), k(1, 100, 99, 100), k(3, 110), k(4, 120)];
+  const result = harness([{ action: 'open', side: 'buy', rationale: 'enter' },
+    { action: 'close', fraction: 1, rationale: 'pre-gap exit' }], klines, { executionModel: 'maker-conservative' });
+  expect(result.trades).toHaveLength(1);
+  expect(result.trades[0].reason).toBe('end of history');
+  expect(result.trades[0].exit).toBeCloseTo(120 * (1 - 2 / 20000), 10);
+  expect(result.warnings.some(w => w.includes('Existing positions remain exposed'))).toBe(true);
+});
+
+for (const fraction of [0, -1, 2, NaN, Infinity]) {
+  test(`maker rejects invalid close fraction ${fraction} without corrupting a position`, () => {
+    const result = harness([{ action: 'open', side: 'buy', rationale: 'enter' },
+      { action: 'close', fraction, rationale: 'invalid' }],
+      [k(0, 100), k(1, 100, 99, 101), k(2, 110), k(3, 120)], { executionModel: 'maker-conservative' });
+    expect(result.trades).toHaveLength(1);
+    expect(result.trades[0].reason).toBe('end of history');
+    expect(result.trades[0].quantity).toBe(10);
+    expect(result.netPnl).toBeCloseTo((120 * (1 - 2 / 20000) - 100) * 10, 9);
+  });
+}
+
 test('invalid TTL configuration is rejected', () => {
   const registry = new StrategyRegistry();
   registry.register(scriptedStrategy([]));

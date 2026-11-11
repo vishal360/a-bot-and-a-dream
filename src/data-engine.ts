@@ -17,12 +17,13 @@
  *  status(); the engine never blocks or touches the feed's recording path. */
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
+import { assertSafePath, createManifest, digestFile, verifyBackup, verifiedIndependentCopy, writeManifest, type IndependentCopyVerifier } from './backup-verification';
 import { LighterEvidence } from './lighter-evidence';
 import type { Store } from './store';
 
-export type DataEngineOptions = { root?: string; keepDays?: number; keepBytes?: number; pollMs?: number };
+export type DataEngineOptions = { root?: string; keepDays?: number; keepBytes?: number; pollMs?: number; independentCopyVerifier?: IndependentCopyVerifier };
 export type ArchiveRecord = {
-  captureId: string; file: string; sha256: string; markets: string[]; startedMs: number;
+  captureId: string; file: string; sha256: string; fileSha256?: string; integrity?: string; markets: string[]; startedMs: number;
   endedMs: number | null; state: string; frames: number; sourceBytes: number; archiveBytes: number; archivedAt: string;
 };
 
@@ -38,8 +39,10 @@ export class DataEngine {
   private failures: string[] = [];
   private lastArchivedAt: string | null = null;
   private busy = false;
+  private retentionBlocked = false;
+  private diskPressure = false;
 
-  constructor(private store: Store, private evidence: LighterEvidence, options: DataEngineOptions = {}) {
+  constructor(private store: Store, private evidence: LighterEvidence, private options: DataEngineOptions = {}) {
     this.root = resolve(options.root ?? 'data/archive');
     this.keepDays = options.keepDays ?? 30;
     this.keepBytes = options.keepBytes ?? 2 * 1024 * 1024 * 1024;
@@ -47,6 +50,7 @@ export class DataEngine {
     if (!Number.isInteger(this.keepDays) || this.keepDays < 1) throw new Error('Invalid archive keepDays');
     if (!Number.isSafeInteger(this.keepBytes) || this.keepBytes < 4096) throw new Error('Invalid archive keepBytes');
     if (!Number.isInteger(this.pollMs) || this.pollMs < 250) throw new Error('Invalid archive pollMs');
+    assertSafePath(this.root);
     mkdirSync(this.root, { recursive: true });
     this.loadIndex();
   }
@@ -55,11 +59,15 @@ export class DataEngine {
 
   private loadIndex() {
     this.index.clear();
+    assertSafePath(this.indexFile(), this.root);
     if (!existsSync(this.indexFile())) return;
     for (const line of readFileSync(this.indexFile(), 'utf8').split(/\r?\n/).filter(Boolean)) {
       try {
         const record = JSON.parse(line) as ArchiveRecord;
         if (!record || typeof record.captureId !== 'string' || typeof record.file !== 'string' || typeof record.sha256 !== 'string') throw new Error('bad record');
+        assertSafePath(record.file, this.root);
+        const verified = verifyBackup(record.file);
+        if (verified.kind !== 'archive' || record.archiveBytes !== verified.bytes || record.fileSha256 !== verified.sha256) throw new Error('archive index integrity mismatch');
         this.index.set(record.captureId, record);
       } catch {
         this.failures.push('index line unreadable and skipped');
@@ -68,7 +76,9 @@ export class DataEngine {
   }
 
   private persistIndex() {
+    assertSafePath(this.indexFile(), this.root);
     const tmp = `${this.indexFile()}.tmp`;
+    assertSafePath(tmp, this.root);
     writeFileSync(tmp, [...this.index.values()].map(record => JSON.stringify(record)).join('\n') + '\n', { encoding: 'utf8' });
     renameSync(tmp, this.indexFile());
   }
@@ -104,13 +114,19 @@ export class DataEngine {
         if (recompute !== capture.sha256) throw new Error(`round-trip checksum mismatch (${recompute.slice(0, 12)} vs ${capture.sha256.slice(0, 12)})`);
         const day = new Date(capture.manifest.startedMs).toISOString().slice(0, 10);
         const file = join(this.root, day, `${capture.manifest.startedMs}-${capture.manifest.id.replace(/[^A-Za-z0-9-]/g, '-')}.json`);
+        assertSafePath(file, this.root);
+        if (existsSync(file)) throw new Error('existing archive retained; refusing overwrite (reconcile index offline)');
         mkdirSync(dirname(file), { recursive: true });
         const bytes = Buffer.from(JSON.stringify(capture), 'utf8');
         const tmp = `${file}.tmp`;
-        writeFileSync(tmp, bytes);
+        assertSafePath(tmp, this.root);
+        writeFileSync(tmp, bytes, { flag: 'wx' });
+        if (digestFile(tmp).sha256 !== new Bun.CryptoHasher('sha256').update(bytes).digest('hex')) throw new Error('archive readback mismatch');
         renameSync(tmp, file);
+        const integrityManifest = createManifest(file, 'archive');
+        writeManifest(file, integrityManifest);
         const record: ArchiveRecord = {
-          captureId: capture.manifest.id, file, sha256: capture.sha256,
+          captureId: capture.manifest.id, file, sha256: capture.sha256, fileSha256: integrityManifest.sha256, integrity: 'ok',
           markets: capture.manifest.markets.map(m => m.symbol), startedMs: capture.manifest.startedMs,
           endedMs: capture.manifest.endedMs, state: capture.manifest.state, frames: capture.manifest.frames,
           sourceBytes: capture.manifest.bytes, archiveBytes: bytes.byteLength, archivedAt: new Date().toISOString(),
@@ -128,6 +144,7 @@ export class DataEngine {
 
   private enforceRetention(): string[] {
     const pruned: string[] = [];
+    this.retentionBlocked = false;
     const cutoff = Date.now() - this.keepDays * 86400000;
     let total = 0;
     for (const record of this.index.values()) total += record.archiveBytes;
@@ -135,15 +152,24 @@ export class DataEngine {
       if (record.startedMs >= cutoff && total <= this.keepBytes) break;
       if (record.startedMs < cutoff || total > this.keepBytes) {
         try {
+          assertSafePath(record.file, this.root);
+          const manifest = verifyBackup(record.file);
+          const receipt = verifiedIndependentCopy(record.file, manifest, this.options.independentCopyVerifier);
+          if (!receipt) { this.retentionBlocked = true; continue; }
+          this.store.audit('DATA_ARCHIVE_RETENTION_RECEIPT', JSON.stringify(receipt));
           if (existsSync(record.file)) rmSync(record.file);
+          rmSync(`${record.file}.manifest.json`);
           total -= record.archiveBytes;
           this.index.delete(record.captureId);
           pruned.push(record.captureId);
         } catch (error) {
+          this.retentionBlocked = true;
           this.fail(`prune ${record.captureId}: ${(error as Error).message}`);
         }
       }
     }
+    this.diskPressure = total > this.keepBytes;
+    if (this.retentionBlocked) this.fail(`retention blocked: no verified independent copy; local bytes=${total}, cap=${this.keepBytes}`);
     if (pruned.length) this.persistIndex();
     return pruned;
   }
@@ -159,6 +185,7 @@ export class DataEngine {
     let bytesOnDisk = 0;
     for (const record of this.index.values()) bytesOnDisk += record.archiveBytes;
     return {
+      retentionBlocked: this.retentionBlocked, diskPressure: this.diskPressure, remoteVerified: false, encryption: 'not-implemented',
       root: this.root, captures: this.index.size, bytesOnDisk, keepDays: this.keepDays, keepBytes: this.keepBytes,
       lastArchivedAt: this.lastArchivedAt, failures: this.failures.slice(-5),
       ring: this.evidence.list().map(m => ({ id: m.id, state: m.state, frames: m.frames, markets: m.markets.map(x => x.symbol) })),

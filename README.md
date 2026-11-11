@@ -1,3 +1,11 @@
+# Current implementation review (2026-11-11)
+
+See [implementation status and remaining release gates](docs/IMPLEMENTATION_STATUS.md) for the code-audited continuation of the profitability roadmap. **Paper only; no profitable strategy or live readiness established.** Single-capture SPA is screening and cannot install promotions. Replay v4 corrects delayed orders, shorts, partial-close accounting and liquidity assumptions, and uses explicit hourly funding-history events (model coverage is not venue corroboration). Four research-only candidates, fail-closed backup retention/restore verification, durable critical alerts and isolated locked testnet execution foundations are implemented; see [next-stage handoff](docs/NEXT_STAGES.md). No execution routes are enabled and no actual testnet signing/submission has been validated. Durable decision history and reduction-safe fleet loss brakes are implemented. Historical descriptions below may predate this review.
+
+## Windows: click to start/stop
+
+Double-click [Dashboard.cmd](Dashboard.cmd) for **Start Dashboard**, **Open Dashboard**, and **Stop Dashboard** buttons. A desktop shortcut can be installed with [install-dashboard-shortcut.ps1](scripts/install-dashboard-shortcut.ps1). Default URL is **http://127.0.0.1:3001**, separate from an existing terminal on port 3000. See [Windows launcher setup and safety](docs/WINDOWS_LAUNCHER.md). Starting does not authorize trading; stopping takes local monitoring offline.
+
 # Current paper simulation status
 
 Multi-market mainnet-depth simulation is available in the Trading workspace.

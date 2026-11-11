@@ -1,5 +1,5 @@
 import { test, expect } from 'bun:test';
-import { existsSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { StreamMarket } from '../src/lighter-book';
@@ -69,10 +69,10 @@ test('interrupted captures (restarts) are archived too, and a restarted engine d
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-test('retention prunes oldest captures first under age and byte caps', () => {
+test('explicit trusted independent-copy adapter enables oldest-first retention', () => {
   const root = join(tmpdir(), `abad-archive-${crypto.randomUUID()}`);
   try {
-    const { evidence, engine, close } = fixture(root, { keepDays: 30, keepBytes: 4096 });
+    const { evidence, engine, close } = fixture(root, { keepDays: 30, keepBytes: 4096, independentCopyVerifier: (_file: string, m: any) => ({ provider: 'injected-test-adapter', objectId: m.file, sha256: m.sha256, bytes: m.bytes, readbackVerified: true, independent: true }) });
     const old = baseWall - 40 * 86400000; // beyond keepDays
     evidence.begin('cap-old-big', [market], 5000, false, { wall: old, mono: 1 });
     for (let n = 1; n <= 40; n++) evidence.append('cap-old-big', rawFrame(n, 'x'.repeat(200)), { wall: old + n, mono: 1 + n }, []);
@@ -88,6 +88,40 @@ test('retention prunes oldest captures first under age and byte caps', () => {
     expect(records.map(r => r.captureId)).toEqual(['cap-new-small']);
     expect(existsSync(records[0].file)).toBe(true);
     expect(existsSync(records[0].file.replace(/cap-new-small\.json$/, 'cap-old-big.json'))).toBe(false);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('age and byte pressure retains sole archive without independent verification', () => {
+  const root = join(tmpdir(), `abad-archive-${crypto.randomUUID()}`);
+  try {
+    const { evidence, engine, close } = fixture(root, { keepDays: 1, keepBytes: 4096 });
+    try {
+      evidence.begin('sole', [market], 5000, false, clock);
+      for (let n = 1; n <= 40; n++) evidence.append('sole', rawFrame(n, 'x'.repeat(200)), { wall: baseWall + n, mono: 100 + n }, []);
+      evidence.finish('sole', 'test', baseWall + 100);
+      expect(engine.tick().pruned).toEqual([]);
+      expect(engine.status().retentionBlocked).toBe(true);
+      expect(engine.status().diskPressure).toBe(true);
+      const [record] = readIndex(root);
+      expect(existsSync(record.file)).toBe(true);
+      expect(existsSync(`${record.file}.manifest.json`)).toBe(true);
+    } finally { close(); }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('forged traversal index record cannot delete any outside file', () => {
+  const root = join(tmpdir(), `abad-archive-${crypto.randomUUID()}`);
+  const archive = join(root, 'archive');
+  mkdirSync(archive, { recursive: true });
+  const outside = join(root, 'outside.json'); writeFileSync(outside, 'sole evidence');
+  writeFileSync(join(archive, 'index.jsonl'), JSON.stringify({ captureId: 'forged', file: outside, sha256: '0'.repeat(64), archiveBytes: 99999, startedMs: 1 }) + '\n');
+  try {
+    const { engine, close } = fixture(archive, { keepDays: 1, keepBytes: 4096, independentCopyVerifier: () => { throw new Error('must not call adapter'); } });
+    try {
+      expect(engine.tick().pruned).toEqual([]);
+      expect(readFileSync(outside, 'utf8')).toBe('sole evidence');
+      expect(engine.status().failures.some(f => f.includes('index'))).toBe(true);
+    } finally { close(); }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

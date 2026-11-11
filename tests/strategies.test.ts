@@ -23,6 +23,8 @@ test('registry validates ids, rejects duplicates and freezes artifact hashes', (
   const hash = artifactHash(breakoutV1);
   expect(hash).toHaveLength(64);
   expect(artifactHash({ ...breakoutV1, description: 'changed' })).not.toBe(hash);
+  expect(artifactHash({ ...breakoutV1, artifactSources: ['src/strategies/types.ts'] })).not.toBe(hash);
+  expect(() => artifactHash({ ...breakoutV1, artifactSources: ['../vault.key'] })).toThrow('artifact source');
 });
 
 test('parameter validation is bounded and never invents values', () => {

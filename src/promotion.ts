@@ -1,12 +1,13 @@
 import { existsSync, readFileSync } from 'node:fs';
 import type { Strategy } from './strategies/types';
 import { artifactHash } from './strategies/registry';
+import { REPLAY_SIMULATOR_VERSION } from './backtest-replay';
 
-/** Research promotion gate (docs/FLEET.md): a strategy config may run as a fleet bot
- *  only after the SPA/StepM research verifier (research/spa_verify.py) found it beats
- *  holding cash on a recorded capture, corrected for the number of configurations
- *  tried. scripts/research-promote.ts installs a PASS verdict as
- *  research/promotions.json; this module enforces it.
+/** PAPER configuration allowlist, not production research authorization.
+ *  A single-capture SPA/StepM screen is NOT independent holdout evidence. Existing
+ *  v2 manifests can restrict PAPER experimentation to exact configurations, but
+ *  neither their hashes nor user-supplied evidence claims prove research approval.
+ *  scripts/research-promote.ts archives screens and cannot install approval.
  *
  *  Ratchet semantics (fail-closed once research exists):
  *  - unverified: no manifest installed. Bots run as before; /api/fleet labels the mode.
@@ -52,7 +53,7 @@ const ID = /^[a-z0-9-]{2,60}$/;
 export function canonicalParams(params: unknown): string {
   if (!params || typeof params !== 'object' || Array.isArray(params)) throw new Error('params must be an object');
   const keys = Object.keys(params as Record<string, unknown>).sort();
-  const clean: Record<string, number> = {};
+  const clean: Record<string, number> = Object.create(null);
   for (const key of keys) {
     const value = (params as Record<string, unknown>)[key];
     if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`Non-finite parameter: ${key}`);
@@ -72,21 +73,23 @@ export function configId(strategyId: string, params: Record<string, number>): st
 export function manifestErrors(raw: unknown): string[] {
   const errors: string[] = [];
   const m = raw as Partial<PromotionManifest> | null;
-  if (!m || typeof m !== 'object') return ['manifest is not an object'];
+  if (!m || typeof m !== 'object' || Array.isArray(m)) return ['manifest is not an object'];
   if (m.version !== 2) errors.push('unsupported manifest version');
   if (typeof m.generatedAt !== 'string' || Number.isNaN(Date.parse(m.generatedAt))) errors.push('invalid generatedAt');
   const capture = m.capture as PromotionManifest['capture'] | undefined;
-  if (!capture || typeof capture !== 'object' || !HEX64.test(String(capture.sha256)) ||
+  if (!capture || typeof capture !== 'object' || (typeof capture.sha256 !== 'string' || !HEX64.test(capture.sha256)) ||
       typeof capture.market !== 'string' || !capture.market ||
       !Number.isSafeInteger(capture.frames) || capture.frames < 1) errors.push('invalid capture block');
   if (typeof m.alpha !== 'number' || !(m.alpha > 0 && m.alpha < 1)) errors.push('invalid alpha');
   if (typeof m.reps !== 'number' || !Number.isSafeInteger(m.reps) || m.reps < 100) errors.push('invalid reps');
   if (typeof m.samples !== 'number' || !Number.isSafeInteger(m.samples) || m.samples < 101) errors.push('insufficient samples');
-  if (!HEX64.test(String(m.verifierSha256))) errors.push('invalid verifierSha256');
-  if (!HEX64.test(String(m.verdictSha256))) errors.push('invalid verdictSha256');
-  if (typeof m.simulatorVersion !== 'string' || !m.simulatorVersion) errors.push('invalid simulatorVersion');
+  if (typeof m.verifierSha256 !== 'string' || !HEX64.test(m.verifierSha256)) errors.push('invalid verifierSha256');
+  if (typeof m.verdictSha256 !== 'string' || !HEX64.test(m.verdictSha256)) errors.push('invalid verdictSha256');
+  if (m.simulatorVersion !== REPLAY_SIMULATOR_VERSION) errors.push('unsupported simulatorVersion');
   if (typeof m.expiresAt !== 'string' || Number.isNaN(Date.parse(m.expiresAt))) errors.push('invalid expiresAt');
-  if (m.maxNotionalPerOrderUsd !== undefined && (!Number.isFinite(m.maxNotionalPerOrderUsd) || m.maxNotionalPerOrderUsd < 10)) errors.push('invalid maxNotionalPerOrderUsd');
+  if (typeof m.generatedAt === 'string' && typeof m.expiresAt === 'string' &&
+      Date.parse(m.expiresAt) <= Date.parse(m.generatedAt)) errors.push('expiresAt must follow generatedAt');
+  if (typeof m.maxNotionalPerOrderUsd !== 'number' || !Number.isFinite(m.maxNotionalPerOrderUsd) || m.maxNotionalPerOrderUsd < 10) errors.push('invalid maxNotionalPerOrderUsd');
   if (!Array.isArray(m.entries) || !m.entries.length) { errors.push('entries must be a non-empty array'); return errors; }
   const seen = new Set<string>();
   m.entries.forEach((entry, index) => {
@@ -95,7 +98,7 @@ export function manifestErrors(raw: unknown): string[] {
     if (typeof entry.strategyId !== 'string' || !ID.test(entry.strategyId)) errors.push(`${at} has an invalid strategyId`);
     let canonical: string;
     try { canonical = canonicalParams(entry.params); } catch { errors.push(`${at} has invalid params`); return; }
-    if (!HEX64.test(String(entry.artifactHash))) errors.push(`${at} has an invalid artifactHash`);
+    if (typeof entry.artifactHash !== 'string' || !HEX64.test(entry.artifactHash)) errors.push(`${at} has an invalid artifactHash`);
     if (typeof entry.spaPvalue !== 'number' || !Number.isFinite(entry.spaPvalue) || entry.spaPvalue < 0 ||
         (typeof m.alpha === 'number' && m.alpha > 0 && m.alpha < 1 && entry.spaPvalue > m.alpha)) errors.push(`${at} spaPvalue invalid or above alpha`);
     const key = `${entry.strategyId}:${canonical}`;
@@ -126,10 +129,12 @@ export class PromotionGate {
     // A promotion is a review window, not a permanent right (review P0-01): expired
     // authorization must never admit new exposure. Protective reductions are unaffected —
     // close proposals never required alpha authorization in the first place.
-    if (Date.parse(manifest.expiresAt) < Date.now()) {
+    if (Date.parse(manifest.generatedAt) > Date.now()) return PromotionGate.refusing(['promotion generatedAt is in the future']);
+    if (Date.parse(manifest.expiresAt) <= Date.now()) {
       return PromotionGate.refusing([`promotion expired at ${manifest.expiresAt}; re-run scripts/research-promote.ts (protective reductions remain allowed — closes never needed alpha authorization)`]);
     }
-    return new PromotionGate('strict', manifest);
+    // Own the validated snapshot: later caller mutations cannot change authorization.
+    return new PromotionGate('strict', JSON.parse(JSON.stringify(manifest)) as PromotionManifest);
   }
 
   private hash(strategy: Strategy): string {
@@ -140,7 +145,7 @@ export class PromotionGate {
 
   allows(strategy: Strategy, params: Record<string, number>): boolean {
     if (this.mode === 'unverified') return true;
-    if (this.mode !== 'strict' || !this.manifest) return false;
+    if (this.mode !== 'strict' || !this.manifest || Date.parse(this.manifest.expiresAt) <= Date.now()) return false;
     let canonical: string;
     try { canonical = canonicalParams(params); } catch { return false; }
     const artifact = this.hash(strategy);
@@ -148,23 +153,26 @@ export class PromotionGate {
       entry.strategyId === strategy.id && entry.artifactHash === artifact && canonicalParams(entry.params) === canonical);
   }
 
-  describe(): { mode: PromotionMode; reasons?: string[]; generatedAt?: string; capture?: PromotionManifest['capture']; alpha?: number; reps?: number; samples?: number; simulatorVersion?: string; expiresAt?: string; expired?: boolean; maxNotionalPerOrderUsd?: number; promoted?: { strategyId: string; spaPvalue: number }[] } {
+  describe(): { mode: PromotionMode; paperOnly: true; researchApproved: false; independentHoldout: false; reasons?: string[]; generatedAt?: string; capture?: PromotionManifest['capture']; alpha?: number; reps?: number; samples?: number; simulatorVersion?: string; expiresAt?: string; expired?: boolean; maxNotionalPerOrderUsd?: number; promoted?: { strategyId: string; spaPvalue: number }[] } {
     if (this.mode === 'strict' && this.manifest) {
       return {
         mode: this.mode,
+        paperOnly: true,
+        researchApproved: false,
+        independentHoldout: false,
         generatedAt: this.manifest.generatedAt,
-        capture: this.manifest.capture,
+        capture: { ...this.manifest.capture },
         alpha: this.manifest.alpha,
         reps: this.manifest.reps,
         samples: this.manifest.samples,
         simulatorVersion: this.manifest.simulatorVersion,
         expiresAt: this.manifest.expiresAt,
-        expired: Date.parse(this.manifest.expiresAt) < Date.now(),
+        expired: Date.parse(this.manifest.expiresAt) <= Date.now(),
         maxNotionalPerOrderUsd: this.manifest.maxNotionalPerOrderUsd,
         promoted: this.manifest.entries.map(entry => ({ strategyId: entry.strategyId, spaPvalue: entry.spaPvalue })),
       };
     }
-    return { mode: this.mode, reasons: this.reasons };
+    return { mode: this.mode, paperOnly: true, researchApproved: false, independentHoldout: false, reasons: [...this.reasons] };
   }
 }
 

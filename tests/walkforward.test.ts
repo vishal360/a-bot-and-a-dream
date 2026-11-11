@@ -23,6 +23,11 @@ test('walk-forward split fails closed on insufficient history and bad arguments'
   expect(() => splitWalkForward([], 1, 1)).toThrow('needs klines');
 });
 
+test('day-count split rejects later gaps instead of treating bar counts as elapsed days', () => {
+  const gappy = tenDays.map((k, i) => i < 100 ? k : { ...k, openTime: k.openTime + 60000, closeTime: k.closeTime + 60000 });
+  expect(() => splitWalkForward(gappy, 7, 3)).toThrow('uniformly spaced');
+});
+
 test('the two-tier verdict: train survivor AND positive holdout, nothing else', () => {
   const verdict = walkForwardVerdict({
     candidates: ['a', 'b', 'c', 'd'],

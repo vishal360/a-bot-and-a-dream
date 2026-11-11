@@ -36,6 +36,10 @@ export interface Strategy {
    *  captures with zero funding samples mark such strategies ineligible (missing
    *  funding is never treated as zero funding). */
   fundingDependent?: boolean;
+  /** Explicit research candidates are never admitted to the paper automation fleet. */
+  researchOnly?: boolean;
+  /** Evaluator helper identities included in artifact hashing. */
+  artifactSources?: readonly string[];
   evaluate(ctx: StrategyContext): StrategyProposal;
 }
 

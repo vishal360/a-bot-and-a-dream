@@ -4,6 +4,7 @@ import { DecisionJournal } from '../src/journal';
 import { FeedHealthGuard, feedPolicyDefaults } from '../src/feed-health';
 import { StrategyRegistry } from '../src/strategies/registry';
 import { breakoutV1 } from '../src/strategies/builtin';
+import { researchStrategies } from '../src/strategies/research';
 import { Store } from '../src/store';
 
 const marketMeta = { symbol: 'BTC', market_id: 0, supported_price_decimals: 2, supported_size_decimals: 4, min_base_amount: 0.001, min_quote_amount: 10 };
@@ -32,6 +33,7 @@ function harness(options: { paper?: any; feed?: any; fills?: any[] } = {}) {
   const journal = new DecisionJournal(store);
   const registry = new StrategyRegistry();
   registry.register(breakoutV1);
+  for (const strategy of researchStrategies) registry.register(strategy);
   registry.register({ id: 'always-open', name: 'Always open', description: 'test stub', params: [],
     evaluate: () => ({ action: 'open', side: 'buy', rationale: 'stub open' }) });
   registry.register({ id: 'always-close', name: 'Always close', description: 'test stub', params: [],
@@ -56,6 +58,16 @@ test('bot creation validates strategy, parameters and caps; duplicates refuse', 
   expect(status.bots[0].id).toBe('fleet-alpha');
   expect(status.bots[0].status).toBe('paused');
   expect(status.strategies.map((s: any) => s.id)).toContain('breakout-v1');
+});
+
+test('research candidates are visible for replay but cannot be created or smuggled into fleet automation', () => {
+  const { fleet } = harness();
+  for (const strategy of researchStrategies) {
+    expect(fleet.status().strategies.find(s => s.id === strategy.id)?.researchOnly).toBe(true);
+    expect(() => fleet.create({ slug: 'research', strategyId: strategy.id, symbol: 'BTC' })).toThrow('Research-only');
+  }
+  fleet.create({ slug: 'regular', strategyId: 'always-open', symbol: 'BTC' });
+  expect(() => fleet.update({ id: 'fleet-regular', strategyId: researchStrategies[0].id, params: {} })).toThrow('Research-only');
 });
 
 test('automation authorization gates submissions and never survives restart', async () => {
@@ -102,6 +114,7 @@ test('guard dwell, then breakout sizing, fill attribution and journaling work en
   const decisions = journal.list({ botId: 'fleet-brk', limit: 10 }).map((r: any) => r.decision);
   expect(decisions).toContain('submit');
   expect(decisions).toContain('fill');
+  expect(journal.list({ botId: 'fleet-brk', limit: 10 }).find(r => r.decision === 'submit')?.strategy_hash).toMatch(/^[a-f0-9]{64}$/);
 });
 
 test('unhealthy feed blocks opens but never blocks reductions', async () => {

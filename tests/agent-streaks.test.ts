@@ -1,7 +1,17 @@
-﻿import { test, expect } from 'bun:test';
+import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { Store } from '../src/store';
 import { DecisionJournal } from '../src/journal';
 import { AgentRuntime } from '../src/agent-runtime';
+
+let savedGeminiApiKey: string | undefined;
+beforeEach(() => {
+  savedGeminiApiKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'test-only-fake-gemini-key';
+});
+afterEach(() => {
+  if (savedGeminiApiKey === undefined) delete process.env.GEMINI_API_KEY;
+  else process.env.GEMINI_API_KEY = savedGeminiApiKey;
+});
 
 let clock = Date.parse('2026-11-07T12:00:00Z');
 const now = () => clock;

@@ -36,6 +36,10 @@ test('a spill failure never breaks recording (fail-safe, counted, surfaced)', ()
     for (let i = 0; i < 120; i++) journal.record(entry(i));
     expect(journal.archiveStatus().failures).toBeGreaterThan(0);
     expect(journal.archiveStatus().lastError).toBeTruthy();
+    // A broken secondary exporter cannot erase the durable economic trail.
+    expect(journal.historySinceId(0)).toHaveLength(120);
+    expect(journal.historySinceId(0)[0].rationale).toBe('e0');
+    expect(journal.archiveStatus().historyRows).toBe(120);
     // Recording itself is unaffected: the ring is full and correct.
     expect(journal.list({ limit: 1000 })).toHaveLength(100);
   } finally { require('node:fs').rmSync(dir, { force: true }); }
@@ -46,4 +50,18 @@ test('archiveDir: null disables the spillway (bounded ring only)', () => {
   for (let i = 0; i < 110; i++) journal.record(entry(i));
   expect(journal.archiveStatus().dir).toBeNull();
   expect(journal.list({ limit: 1000 })).toHaveLength(100);
+  expect(journal.historySinceId(0)).toHaveLength(110);
+  expect(() => journal.historySinceId(-1)).toThrow('cursor');
+  expect(() => journal.historySinceId(0, 1001)).toThrow('limit');
+});
+
+test('history insertion failure rolls back the ring insertion and pruning', () => {
+  const s = new Store(':memory:'), journal = new DecisionJournal(s, 100, null);
+  for (let i = 0; i < 100; i++) journal.record(entry(i));
+  s.db.exec("CREATE TRIGGER reject_history BEFORE INSERT ON decision_history BEGIN SELECT RAISE(ABORT, 'history unavailable'); END");
+  expect(() => journal.record(entry(100))).toThrow('history unavailable');
+  expect(journal.list({ limit: 1000 })).toHaveLength(100);
+  expect(journal.list({ limit: 1000 }).at(-1).rationale).toBe('e0');
+  expect(journal.historySinceId(0)).toHaveLength(100);
+  s.db.close();
 });

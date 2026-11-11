@@ -11,6 +11,12 @@ export function splitWalkForward(klines: Kline[], trainDays: number, holdoutDays
   const stepMs = klines[1].openTime - klines[0].openTime;
   if (!Number.isSafeInteger(stepMs) || stepMs <= 0) throw new Error('Klines must be uniformly spaced');
   const perDay = Math.round(86400000 / stepMs);
+  if (86400000 % stepMs !== 0 || !Number.isSafeInteger(perDay) || perDay < 1) throw new Error('Kline cadence must divide a UTC day');
+  for (let i = 1; i < klines.length; i++) {
+    if (!Number.isSafeInteger(klines[i].openTime) || klines[i].openTime - klines[i - 1].openTime !== stepMs) {
+      throw new Error('Klines must be uniformly spaced; use explicit bars mode for segmented data');
+    }
+  }
   const holdoutCount = holdoutDays * perDay;
   if (klines.length < holdoutCount + perDay) throw new Error(`Not enough history: need more than ${holdoutDays} day(s) plus a train window`);
   const holdoutStart = klines.length - holdoutCount;
@@ -21,6 +27,11 @@ export function splitWalkForward(klines: Kline[], trainDays: number, holdoutDays
 export function splitByBars(klines: Kline[], trainBars: number): WalkForwardSplit {
   if (!Array.isArray(klines) || klines.length < 2) throw new Error('Walk-forward needs klines');
   if (!Number.isInteger(trainBars) || trainBars < 100) throw new Error('trainBars must be an integer >= 100');
+  for (let i = 0; i < klines.length; i++) {
+    if (!Number.isSafeInteger(klines[i].openTime) || (i > 0 && klines[i].openTime <= klines[i - 1].openTime)) {
+      throw new Error('Bars-mode klines must be strictly chronological');
+    }
+  }
   const holdoutCount = klines.length - trainBars;
   if (holdoutCount < 50) throw new Error(`Holdout too small: ${holdoutCount} bar(s); need >= 50`);
   return { train: klines.slice(0, trainBars), holdout: klines.slice(trainBars) };
@@ -34,8 +45,8 @@ export type WalkForwardVerdict = {
 /** The two-tier honesty rule (docs/HISTORY_BACKFILL.md): a config is walk-forward-verified
  *  only if it (1) survived the multiplicity-corrected SPA screen on the TRAIN window and
  *  (2) beat holding cash net of fees on the untouched HOLDOUT window. Historical
- *  verification NEVER promotes: research/promotions.json is installable only from
- *  Lighter-capture PASS verdicts (scripts/research-promote.ts). */
+ *  verification NEVER promotes. Target-venue capture SPA is also only screening;
+ *  no current script installs independent research or live approval. */
 export function walkForwardVerdict(input: {
   candidates: string[]; trainSurvivors: string[]; holdout: { id: string; netPnl: number }[];
 }): WalkForwardVerdict {

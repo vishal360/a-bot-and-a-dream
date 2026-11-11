@@ -95,15 +95,18 @@ Set-Content -NoNewline -Path .env -Value "GEMINI_API_KEY=AIza...your-key..."
   days progress + unlock button). Journal-as-agent-memory: each persona's last
   10 graded outcomes are injected into its prompt (memory is never invented
   when history is empty). research/conformal_calibration.py produces
-  research/calibration.json (split-conformal 90% interval on the graded move
-  per persona + pooled, finite-sample guarantee, n<100 flagged unreliable);
+  research/calibration.json (empirical move interval, not probability-confidence
+  calibration; exchangeability and prospective coverage are not established,
+  and n>=100 does not establish reliability);
   /api/agents/activity surfaces it and the scorecard prints the widths.
   Restart discipline fix: a session-only shadow latch now ACTUALLY clears on
   restart (the constructor implements what server.ts only promised before).
 - **Cumulative gate memory + milestones + digest + dark badges — 2026-11-07.**
-  The promotion gate reads CUMULATIVE store-backed stats (one row per UTC day,
-  kept 90 days, seeded once from the journal window) so the gate can no longer
-  shrink dishonestly when old graded outcomes roll off the bounded journal.
+  The promotion gate now preserves lifetime counts and distinct-day identities
+  separately from the 90-day display window, migrates legacy evidence conservatively,
+  and seeds absent memory from paginated durable history. Malformed evidence blocks
+  eligibility; incomplete signed-move history remains unknown. The gate is a paper
+  experiment milestone, not a proof of edge.
   Telegram alerting gained: gate MILESTONE alerts (fire once at 100 graded
   outcomes — calibration becomes statistically reliable — and once when every
   threshold is met; latched, failed sends retried next tick) and a daily digest

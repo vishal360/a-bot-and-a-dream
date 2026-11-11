@@ -1,5 +1,6 @@
 import type { Store } from './store';
 import type { DecisionJournal } from './journal';
+import { AlertOutbox, isCriticalAlert } from './alert-outbox';
 
 /** The promotion-gate snapshot the alerter needs for milestone detection. */
 export type AlertGateStatus = {
@@ -22,6 +23,11 @@ export type TelegramAlerterOptions = {
   digestHourUtc?: number;
   now?: () => number;
   partners?: AlerterPartners;
+  /** Critical history ingestion is bounded per tick, including while unconfigured. */
+  ingestBatchSize?: number;
+  sendTimeoutMs?: number;
+  retryBaseMs?: number;
+  retryMaxMs?: number;
 };
 
 const DEFAULT_KINDS = ['agent-outcome', 'agent-order', 'health-alert', 'guard-pause', 'guard-resume', 'bot-pause', 'bot-halt'];
@@ -31,10 +37,10 @@ const DEFAULT_KINDS = ['agent-outcome', 'agent-order', 'health-alert', 'guard-pa
  *  daily-cap wall, and a "persona may be dark" warning when one analyst rejects
  *  repeatedly (the exact failure that silently killed two personas for two days).
  *
- *  Fail-closed and polite: without TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env the
- *  alerter is idle; send failures never crash anything (audited, surfaced in status);
- *  the cursor starts at the CURRENT journal head so history is never replayed; a flood
- *  drops the overflow quietly instead of spamming. */
+ *  Critical events use a durable, at-least-once SQLite outbox fed by authoritative
+ *  history, even without credentials. Pending deliveries never expire. Informational
+ *  events retain their current-head, best-effort cursor and flood dropping semantics.
+ *  Delivery acknowledgement is NOT operator acknowledgement of an incident. */
 export class TelegramAlerter {
   private timer: ReturnType<typeof setInterval> | null = null;
   private cursor: number;
@@ -50,6 +56,11 @@ export class TelegramAlerter {
   private readonly now: () => number;
   private readonly partners: AlerterPartners | undefined;
   private lastDigestDay: string | null = null;
+  private readonly outbox: AlertOutbox;
+  private readonly ingestBatchSize: number;
+  private readonly sendTimeoutMs: number;
+  private readonly retryBaseMs: number;
+  private readonly retryMaxMs: number;
 
   constructor(
     private store: Store,
@@ -67,6 +78,17 @@ export class TelegramAlerter {
     if (!Number.isInteger(this.intervalMs) || this.intervalMs < 5000) throw new Error('Invalid alert interval');
     if (!Number.isInteger(this.rejectStreakAlert) || this.rejectStreakAlert < 1) throw new Error('Invalid rejectStreakAlert');
     if (!Number.isInteger(this.digestHourUtc) || this.digestHourUtc < 0 || this.digestHourUtc > 23) throw new Error('Invalid digestHourUtc');
+    this.ingestBatchSize = options.ingestBatchSize ?? 200;
+    this.sendTimeoutMs = options.sendTimeoutMs ?? 10000;
+    this.retryBaseMs = options.retryBaseMs ?? 20000;
+    this.retryMaxMs = options.retryMaxMs ?? 3600000;
+    if (!Number.isInteger(this.maxPerTick) || this.maxPerTick < 1 || this.maxPerTick > 1000) throw new Error('Invalid maxPerTick');
+    if (!Number.isInteger(this.ingestBatchSize) || this.ingestBatchSize < 1 || this.ingestBatchSize > 1000) throw new Error('Invalid ingestBatchSize');
+    for (const value of [this.sendTimeoutMs, this.retryBaseMs, this.retryMaxMs]) {
+      if (!Number.isSafeInteger(value) || value < 1 || value > 2147483647) throw new Error('Invalid alert timeout/backoff');
+    }
+    if (this.retryMaxMs < this.retryBaseMs) throw new Error('Invalid alert retry range');
+    this.outbox = new AlertOutbox(store);
     this.cursor = this.journal.lastId();
   }
 
@@ -82,6 +104,7 @@ export class TelegramAlerter {
       configured: this.configured(), sent: this.sent, cursor: this.cursor, kinds: this.kinds,
       rejectStreakAlert: this.rejectStreakAlert, failures: this.failures.slice(-3),
       digestHourUtc: this.digestHourUtc, lastDigestDay: this.lastDigestDay,
+      outbox: this.outbox.status(),
     };
   }
 
@@ -101,14 +124,33 @@ export class TelegramAlerter {
 
   async tick(): Promise<{ sent: number; skipped?: string }> {
     if (this.busy) return { sent: 0, skipped: 'tick already in flight' };
-    if (!this.configured()) return { sent: 0, skipped: 'not configured' };
     this.busy = true;
     try {
-      const entries = this.journal.listSinceId(this.cursor, 200);
+      this.outbox.ingest(this.journal, this.now(), e => this.eventText(e), this.ingestBatchSize);
+      if (!this.configured()) return { sent: 0, skipped: 'not configured' };
       let sent = 0;
+      // Reserve the delivery budget for critical items before best-effort traffic.
+      const critical = this.outbox.due(this.now(), this.maxPerTick);
+      for (const item of critical) {
+        try {
+          await this.send(item.text);
+          this.outbox.delivered(item.event_key, this.now());
+          sent++;
+          this.sent++;
+        } catch (error) {
+          const message = (error as Error).message;
+          this.outbox.failed(item, this.now(), message, this.retryBaseMs, this.retryMaxMs);
+          this.recordFailure(message);
+        }
+      }
+      // Attempts, not just successful sends, consume the bounded per-tick budget.
+      let attempts = critical.length;
+      const entries = this.journal.listSinceId(this.cursor, 200);
       for (const e of entries) {
         this.cursor = e.id;
-        if (sent >= this.maxPerTick) continue; // flood protection: drop the overflow quietly
+        if (isCriticalAlert(e.decision)) continue; // only the durable queue delivers these
+        if (attempts >= this.maxPerTick) continue; // only informational overflow is dropped
+        if (e.decision === 'agent-proposal') this.rejectStreak.set(e.bot_id, 0);
         const allow = this.kinds.includes(e.decision);
         const capHit = e.decision === 'skip' && (e.rationale ?? '').includes('cap reached');
         const isReject = e.decision === 'agent-reject' && e.bot_id.startsWith('agent-');
@@ -121,8 +163,9 @@ export class TelegramAlerter {
           text = `[ABAD] ${e.bot_id} may be dark: ${streak} consecutive rejected proposals. Last: ${(e.rationale ?? '').slice(0, 200)}`;
         } else {
           if (e.decision === 'agent-proposal') this.rejectStreak.set(e.bot_id, 0);
-          text = `[ABAD] ${e.decision} · ${e.bot_id} · ${e.symbol}: ${(e.rationale ?? '').slice(0, 220)}`;
+          text = this.eventText(e);
         }
+        attempts++;
         try {
           await this.send(text);
           sent++;
@@ -140,7 +183,7 @@ export class TelegramAlerter {
   }
 
   /** Promotion-gate milestones: fire ONCE when the ensemble record first crosses
-   *  100 graded outcomes (calibration becomes reliable) and once when every
+   *  100 graded outcomes (sample-count milestone only) and once when every
    *  threshold is met. Latched in the store; a failed send is retried next tick. */
   private async checkMilestones() {
     if (!this.partners?.gateStatus) return;
@@ -149,7 +192,7 @@ export class TelegramAlerter {
     const milestones: { key: string; fired: boolean; text: string }[] = [
       {
         key: 'gate.n100', fired: g.stats.graded >= 100,
-        text: `[ABAD] Milestone: the ensemble record reached ${g.stats.graded} graded outcomes (hit rate ${hit}). Conformal calibration widths are now statistically reliable.`,
+        text: `[ABAD] Milestone: the ensemble record reached ${g.stats.graded} graded outcomes (hit rate ${hit}). Sample count alone does not establish calibrated confidence, independent outcomes or profitable trading.`,
       },
       {
         key: 'gate.eligible', fired: g.eligible === true,
@@ -192,13 +235,49 @@ export class TelegramAlerter {
     }
   }
 
+  private eventText(e: any): string {
+    let text = `[ABAD] ${e.decision} · ${e.bot_id} · ${e.symbol}: ${(e.rationale ?? '').slice(0, 220)}`;
+    // Queue contains event content only, never channel configuration or token URLs.
+    text = text.replace(/https?:\/\/api\.telegram\.org\/bot[^\s]+/gi, '[redacted Telegram URL]');
+    for (const secret of [this.token(), this.chatId()]) if (secret) text = text.split(secret).join('[redacted]');
+    return text;
+  }
+
+  private recordFailure(message: string) {
+    this.failures.push(`send failed: ${message}`);
+    while (this.failures.length > 10) this.failures.shift();
+    this.store.audit('TELEGRAM_ALERT_FAILURE', message);
+  }
+
   private async send(text: string) {
-    const token = this.token()!, chat = this.chatId()!;
-    const response = await this.fetcher(`https://api.telegram.org/bot${token}/sendMessage`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: chat, text }),
-    });
-    if (!response.ok) throw new Error(`Telegram HTTP ${response.status}: ${(await response.text()).slice(0, 120)}`);
+    const token = this.token(), chat = this.chatId();
+    if (!token || !chat) throw new Error('Telegram not configured');
+    const controller = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const request = async () => {
+      let response: Response;
+      try {
+        response = await this.fetcher(`https://api.telegram.org/bot${token}/sendMessage`, {
+          method: 'POST', signal: controller.signal,
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ chat_id: chat, text }),
+        });
+      } catch {
+        // Fetch exceptions often include the request URL (and therefore bot token).
+        throw new Error('Telegram transport failed');
+      }
+      if (!response.ok) throw new Error(`Telegram HTTP ${response.status}`);
+      let payload: any;
+      try { payload = await response.json(); } catch { throw new Error('Telegram invalid response'); }
+      if (payload?.ok !== true) throw new Error('Telegram API rejected message');
+    };
+    try {
+      await Promise.race([request(), new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          controller.abort();
+          reject(new Error('Telegram request timed out'));
+        }, this.sendTimeoutMs);
+      })]);
+    } finally { if (timer) clearTimeout(timer); }
   }
 }

@@ -18,6 +18,7 @@ export type HealthMonitorOptions = {
   mirrorStaleMs?: number;
   cooldownMs?: number;
   feedStatus?: () => { state?: string } | any;
+  durabilityStatus?: () => { archive?: { retentionBlocked?: boolean; diskPressure?: boolean }; backup?: { retentionBlocked?: boolean; diskPressure?: boolean } };
   now?: () => number;
 };
 
@@ -58,6 +59,14 @@ export class HealthMonitor {
     const mirrorStale = options.mirrorStaleMs ?? 2 * 3600 * 1000;
 
     this.checks = [
+      ...(options.durabilityStatus ? [{ name: 'durability-retention', run: () => {
+        try {
+          const status = options.durabilityStatus!();
+          const pressured = Object.entries(status).filter(([, value]) => value?.retentionBlocked || value?.diskPressure).map(([name]) => name);
+          return pressured.length ? { state: 'alert' as const, detail: `Sole-copy retention blocked or disk pressure: ${pressured.join(', ')}. Verify independent backup and capacity; do not delete the only evidence.` }
+            : { state: 'ok' as const, detail: 'No reported durability retention pressure' };
+        } catch { return { state: 'alert' as const, detail: 'Durability status unavailable; inspect backup/archive capacity' }; }
+      } }] : []),
       {
         name: 'disk-free',
         run: () => {

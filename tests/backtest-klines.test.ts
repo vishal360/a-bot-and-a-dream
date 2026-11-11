@@ -83,6 +83,109 @@ test('kline validation fails closed', () => {
   }
 });
 
+for (const side of ['buy', 'sell'] as const) {
+  test(`taker ${side}: repeated partial closes conserve basis and allocate both fees`, () => {
+    const seen: StrategyContext[] = [];
+    let i = 0;
+    const strategy: Strategy = { id: 'partial-stub', name: 'Partial', description: 'test', params: [],
+      evaluate(ctx) {
+        seen.push({ ...ctx, window: [...ctx.window] });
+        const step = i++;
+        if (step === 0) return { action: 'open', side, rationale: 'enter' };
+        if (step === 1 || step === 2) return { action: 'close', fraction: 0.5, rationale: 'partial' };
+        return { action: 'hold', rationale: 'wait' };
+      } };
+    const result = replayKlines({ registry: registryWith(strategy), strategyId: strategy.id, params: {},
+      klines: [k(0, 100, 100), k(1, 100, 100), k(2, 110, 110), k(3, 120, 120), k(4, 130, 130)],
+      symbol: 'BTC', capital: 10000, feeBps: 10, spreadBps: 0, notionalPerOrderUsd: 100, source: 'test' });
+    const sign = side === 'buy' ? 1 : -1;
+    expect(seen[1].position!.quantity).toBe(sign);
+    expect(seen[2].position!.quantity).toBe(sign * 0.5);
+    expect(seen[3].position!.quantity).toBe(sign * 0.25);
+    expect(seen[3].position!.average).toBe(100);
+    expect(result.trades.map(t => t.quantity)).toEqual([0.5, 0.25, 0.25]);
+    expect(result.trades.every(t => t.entry === 100)).toBe(true);
+    expect(result.trades[0].pnl).toBeCloseTo(sign * 5 - 0.055 - 0.05, 10);
+    expect(result.trades[1].pnl).toBeCloseTo(sign * 5 - 0.03 - 0.025, 10);
+    expect(result.trades[2].pnl).toBeCloseTo(sign * 7.5 - 0.0325 - 0.025, 10);
+    expect(result.netPnl).toBeCloseTo(sign * 17.5 - 0.2175, 9);
+    expect(result.trades.reduce((s, t) => s + t.pnl, 0)).toBeCloseTo(result.netPnl, 9);
+    expect(result.equity.at(-1)).toBeCloseTo(10000 + result.netPnl, 9);
+  });
+}
+
+test('terminal equity and drawdown include forced exit fee, and fees turn flat trades into losses', () => {
+  const strategy: Strategy = { id: 'flat-stub', name: 'Flat', description: 'test', params: [],
+    evaluate: () => ({ action: 'open', side: 'buy', rationale: 'enter' }) };
+  const result = replayKlines({ registry: registryWith(strategy), strategyId: strategy.id, params: {},
+    klines: [k(0, 100, 100), k(1, 100, 100)], symbol: 'BTC', capital: 10000,
+    feeBps: 10, spreadBps: 0, notionalPerOrderUsd: 100, source: 'test' });
+  expect(result.equity.at(-1)).toBeCloseTo(9999.8, 9);
+  expect(result.netPnl).toBeCloseTo(-0.2, 9);
+  expect(result.trades[0].pnl).toBeCloseTo(-0.2, 9);
+  expect(result.maxDrawdown).toBeCloseTo(0.2 / 10000, 12);
+  expect(result.winRate).toBe(0);
+  expect(result.profitFactor).toBe(0);
+});
+
+for (const side of ['buy', 'sell'] as const) {
+  for (const terminal of [false, true]) {
+    test(`taker ${side}: ${terminal ? 'terminal' : 'next-open'} exit pays opposite-side half-spread and fees`, () => {
+      let step = 0;
+      const strategy: Strategy = { id: 'spread-stub', name: 'Spread', description: 'test', params: [],
+        evaluate() {
+          const i = step++;
+          if (i === 0) return { action: 'open', side, rationale: 'enter' };
+          if (!terminal && i === 1) return { action: 'close', fraction: 1, rationale: 'exit' };
+          return { action: 'hold', rationale: 'wait' };
+        } };
+      const result = replayKlines({ registry: registryWith(strategy), strategyId: strategy.id, params: {},
+        klines: [k(0, 100, 100), k(1, 100, 100), k(2, 110, 120)], symbol: 'BTC', capital: 10000,
+        feeBps: 10, spreadBps: 20, notionalPerOrderUsd: 100, source: 'test' });
+      const sign = side === 'buy' ? 1 : -1;
+      const entry = 100 * (1 + sign * 0.001);
+      const exit = (terminal ? 120 : 110) * (1 - sign * 0.001);
+      const quantity = 100 / entry;
+      const fees = 0.1 + exit * quantity * 0.001;
+      const pnl = sign * (exit - entry) * quantity - fees;
+      expect(result.trades[0].entry).toBeCloseTo(entry, 10);
+      expect(result.trades[0].exit).toBeCloseTo(exit, 10);
+      expect(result.feesUsd).toBeCloseTo(fees, 10);
+      expect(result.trades[0].pnl).toBeCloseTo(pnl, 10);
+      expect(result.netPnl).toBeCloseTo(pnl, 9);
+      expect(result.equity.at(-1)).toBeCloseTo(10000 + pnl, 9);
+      expect(result.warnings.some(w => w.includes('Terminal liquidation assumption'))).toBe(true);
+    });
+  }
+}
+
+test('explicit close-to-open gaps cancel taker proposals and reset warmup even with regular open spacing', () => {
+  const windows: number[] = [];
+  const strategy: Strategy = { id: 'gap-stub', name: 'Gap', description: 'test', params: [],
+    evaluate(ctx) { windows.push(ctx.window.length); return ctx.window.length >= 2
+      ? { action: 'open', side: 'buy', rationale: 'warm' } : { action: 'hold', rationale: 'warmup' }; } };
+  const klines = [k(0, 100, 100), k(2, 100, 100), k(4, 200, 200)].map(bar => ({ ...bar, closeTime: bar.openTime + 1999 }));
+  klines[1].closeTime -= 100; // Count and open cadence look complete, but coverage is not.
+  const result = replayKlines({ registry: registryWith(strategy), strategyId: strategy.id, params: {},
+    klines, symbol: 'BTC', capital: 10000, feeBps: 0, spreadBps: 0, notionalPerOrderUsd: 100, source: 'test' });
+  expect(windows).toEqual([1, 2, 1]);
+  expect(result.trades).toHaveLength(0);
+  expect(result.warnings.some(w => w.includes('1 explicit gap'))).toBe(true);
+});
+
+test('malformed OHLC, closeTime, overlapping candles and unknown execution models fail closed', () => {
+  const replay = (klines: Kline[], executionModel?: any) => replayKlines({ registry: registryWith(breakoutV1),
+    strategyId: breakoutV1.id, params: {}, klines, executionModel, symbol: 'BTC', capital: 10000,
+    feeBps: 0, notionalPerOrderUsd: 100, source: 'test' });
+  for (const patch of [{ high: 99 }, { low: 101 }, { closeTime: NaN }, { closeTime: Infinity },
+    { closeTime: t0 - 1 }, { closeTime: t0 + 0.5 }, { closeTime: 8.64e15 + 1 }, { closeTime: t0 + 1000 }]) {
+    expect(() => replay([{ ...k(0, 100, 100), ...patch }, k(1, 100, 100)])).toThrow('Invalid kline');
+  }
+  for (const model of ['', 'unknown', null]) {
+    expect(() => replay([k(0, 100, 100), k(1, 100, 100)], model)).toThrow('executionModel');
+  }
+});
+
 test('downloader kline parsing validates venue rows', async () => {
   const { parseKlineRow } = await import('../scripts/download-history');
   const good = [1704163200000, '100.5', '101', '100', '100.8', '12.5', 1704163200999];

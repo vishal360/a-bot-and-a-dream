@@ -1,7 +1,7 @@
 import type { Store } from './store';
 import type { FeedHealthGuard } from './feed-health';
 import type { DecisionJournal } from './journal';
-import type { StrategyRegistry } from './strategies/registry';
+import { artifactHash, type StrategyRegistry } from './strategies/registry';
 import { validateParams, midPrice, type StrategyContext, type StrategyProposal } from './strategies/types';
 import type { PublicTrade } from './lighter-trades';
 import { leverageLimit } from './paper';
@@ -112,13 +112,12 @@ export class FleetManager {
       // sees UNREALIZED losses. Tripping blocks NEW entries fleet-wide; protective
       // close proposals from strategies are unaffected (they reduce exposure).
       const brake = this.checkEquityBrake(snapshot, wall);
-      if (brake.tripped) {
-        for (const bot of this.bots.filter(b => b.status === 'running')) this.skip(bot, `equity loss brake: ${brake.detail}`, snapshot, 60000);
-        return;
-      }
       for (const bot of this.bots.filter(b => b.status === 'running')) {
-        await this.step(bot, snapshot);
-        if (this.submitBusy) break; // One matcher submission per tick; the executor is single-flight.
+        const ordersBefore = bot.stats.orders;
+        await this.step(bot, snapshot, brake);
+        // step awaits the matcher and clears submitBusy before returning. Stop after
+        // an attempted submission so sibling closes cannot reuse a stale net position.
+        if (bot.stats.orders !== ordersBefore) break;
       }
     } finally { this.tickBusy = false; }
   }
@@ -153,27 +152,26 @@ export class FleetManager {
     if (!bot.stats.lastError) bot.stats.lastError = reason;
   }
 
-  private async step(bot: FleetBot, snapshot: PaperStatus) {
+  private async step(bot: FleetBot, snapshot: PaperStatus, brake: { tripped: boolean; detail: string }) {
     const now = this.clock.wall(), wall = new Date(now).toISOString();
     const market = snapshot.markets.find((m: any) => m.symbol === bot.symbol);
     if (!market) return this.skip(bot, 'Market metadata unavailable', snapshot);
-    // Daily bot loss is a safety pause: it runs before any proposal can act.
+    // A loss stop denies new entries, but must leave an already-running bot able
+    // to propose protective reductions while there is a valid net position.
+    const position = snapshot.analytics.positions.find((p: any) => p.symbol === `${bot.symbol}-USD`) ?? null;
+    const hasPosition = !!position && Number.isFinite(position.quantity) && position.quantity !== 0;
     const dayRealized = snapshot.analytics.trades.filter((t: any) => t.botId === bot.id && t.time.slice(0, 10) === wall.slice(0, 10)).reduce((s: number, t: any) => s + t.pnl, 0);
-    if (dayRealized <= -bot.maxDailyLossUsd) {
+    const dailyLoss = dayRealized <= -bot.maxDailyLossUsd;
+    if (dailyLoss && !hasPosition) {
       bot.status = 'paused'; bot.stats.lastError = `Daily loss limit: ${dayRealized.toFixed(2)} USD`;
       this.save(); this.store.audit('FLEET_BOT_DAILY_LOSS', `${bot.id}: ${dayRealized.toFixed(2)} USD realized today; bot paused`);
       this.journal.record({ time: wall, botId: bot.id, strategyId: bot.strategyId, symbol: bot.symbol, decision: 'bot-pause', rationale: bot.stats.lastError });
       return;
     }
     const strategy = this.registry.get(bot.strategyId);
-    if (this.promotion && !this.promotion.allows(strategy, bot.params)) {
-      return this.skip(bot, 'Strategy config is not promoted by the research gate', snapshot, 30000,
-        [{ check: 'research-promotion', pass: false, detail: this.promotion.describe().mode }]);
-    }
     const quote = this.feed.read(market.market_id);
     if (!quote) return this.skip(bot, 'No validated executable book', snapshot);
     const trades = this.feed.evidence ? this.feed.evidence.recentTrades(market.market_id, 100) : [];
-    const position = snapshot.analytics.positions.find((p: any) => p.symbol === `${bot.symbol}-USD`) ?? null;
     const ctx: StrategyContext = {
       symbol: bot.symbol,
       book: { bids: quote.bids, asks: quote.asks, time: quote.receivedAt ?? null },
@@ -189,6 +187,21 @@ export class FleetManager {
     const inputs = { mid: midPrice(ctx.book), spread: ctx.book && ctx.book.asks[0] && ctx.book.bids[0] ? ctx.book.asks[0].price - ctx.book.bids[0].price : null,
       fundingRate: ctx.stats?.fundingRate ?? null, positionQuantity: position?.quantity ?? 0, equityUsd: ctx.equityUsd, samples: ctx.window.length };
     if (proposal.action === 'hold') return; // Routine holds are not journaled; the strategy state is visible in the dashboard.
+    // Exempt only a verified reduction from entry gates, never from the operator's
+    // session authorization or pause. Validate before choosing a side/dereferencing.
+    if (proposal.action !== 'open' && proposal.action !== 'close') return this.skip(bot, 'Invalid strategy action', snapshot);
+    if (bot.status !== 'running' || !this.store.get('fleetEnabled')) return this.skip(bot, 'Fleet automation is disabled or bot is paused', snapshot);
+    if (proposal.action === 'close') {
+      if (!hasPosition) return this.skip(bot, 'Nothing valid to close', snapshot);
+      if (!Number.isFinite(proposal.fraction) || proposal.fraction <= 0 || proposal.fraction > 1) return this.skip(bot, 'Invalid close fraction', snapshot);
+    }
+    if (proposal.action === 'open' && strategy.researchOnly) return this.skip(bot, 'Research-only strategy cannot open automated paper exposure', snapshot);
+    if (proposal.action === 'open' && dailyLoss) return this.skip(bot, `Daily loss limit: ${dayRealized.toFixed(2)} USD; new entries blocked`, snapshot);
+    if (proposal.action === 'open' && brake.tripped) return this.skip(bot, `equity loss brake: ${brake.detail}`, snapshot, 60000);
+    if (proposal.action === 'open' && this.promotion && !this.promotion.allows(strategy, bot.params)) {
+      return this.skip(bot, 'Strategy config is not promoted by the research gate', snapshot, 30000,
+        [{ check: 'research-promotion', pass: false, detail: this.promotion.describe().mode }]);
+    }
     if (proposal.action === 'open' && !this.guard.verdict(this.nowMono).allowed) {
       return this.skip(bot, `Feed guard: ${this.guard.verdict(this.nowMono).reason}`, snapshot);
     }
@@ -209,24 +222,25 @@ export class FleetManager {
     }
     const botPnl = snapshot.analytics.bots.find((b: any) => b.botId === bot.id);
     const side = proposal.action === 'open' ? proposal.side : (position!.quantity > 0 ? 'sell' : 'buy');
-    const bestPrice = side === 'buy' ? quote.asks[0].price : quote.bids[0].price;
+    const bestPrice = side === 'buy' ? quote.asks[0]?.price : quote.bids[0]?.price;
+    if (!Number.isFinite(bestPrice) || bestPrice <= 0) return this.skip(bot, 'No validated executable price', snapshot);
     const sizeDecimals = market.supported_size_decimals as number;
     let quantity: number;
     const riskChecks = [
       { check: 'feed-guard', pass: proposal.action === 'close' || this.guard.verdict(this.nowMono).allowed },
-      { check: 'automation-enabled', pass: proposal.action === 'close' || !!this.store.get('fleetEnabled') },
-      { check: 'daily-loss', pass: dayRealized > -bot.maxDailyLossUsd, detail: `${dayRealized.toFixed(2)} / -${bot.maxDailyLossUsd} USD` }
+      { check: 'automation-enabled', pass: !!this.store.get('fleetEnabled') },
+      { check: 'daily-loss', pass: proposal.action === 'close' || !dailyLoss, detail: `${dayRealized.toFixed(2)} / -${bot.maxDailyLossUsd} USD; reductions exempt` },
+      { check: 'equity-brake', pass: proposal.action === 'close' || !brake.tripped, detail: brake.detail }
     ];
     if (proposal.action === 'open') {
       const budget = Math.min(bot.maxNotionalPerOrder, Math.max(0, bot.maxOpenNotional - (this.openNotional.get(bot.id) ?? 0)));
       if (budget < 10) return this.skip(bot, 'Per-bot notional budget exhausted', snapshot, 30000, riskChecks);
       quantity = floorTo(budget / bestPrice, sizeDecimals);
     } else {
-      if (!position) return this.skip(bot, 'Nothing to close', snapshot);
-      if (!Number.isFinite(proposal.fraction) || proposal.fraction <= 0 || proposal.fraction > 1) return this.skip(bot, 'Invalid close fraction', snapshot);
-      quantity = floorTo(Math.abs(position.quantity) * proposal.fraction, sizeDecimals);
+      quantity = floorTo(Math.abs(position!.quantity) * proposal.fraction, sizeDecimals);
+      if (!Number.isFinite(quantity) || quantity > Math.abs(position!.quantity)) return this.skip(bot, 'Invalid reduction quantity', snapshot);
     }
-    if (quantity <= 0 || quantity < Number(market.min_base_amount)) {
+    if (!Number.isFinite(quantity) || quantity <= 0 || quantity < Number(market.min_base_amount)) {
       return this.skip(bot, `Quantity below venue minimum ${market.min_base_amount} ${bot.symbol}`, snapshot, 30000, riskChecks);
     }
     if (quantity * bestPrice < Number(market.min_quote_amount)) {
@@ -235,7 +249,7 @@ export class FleetManager {
     const leverage = Math.max(1, Math.min(bot.leverage, leverageLimit(market)));
     const orderId = crypto.randomUUID();
     bot.stats.orders++; this.save();
-    this.journal.record({ time: wall, botId: bot.id, strategyId: bot.strategyId, strategyHash: undefined, symbol: bot.symbol,
+    this.journal.record({ time: wall, botId: bot.id, strategyId: bot.strategyId, strategyHash: artifactHash(strategy), symbol: bot.symbol,
       decision: 'submit', side, quantity, price: bestPrice, rationale: proposal.rationale, inputs,
       riskChecks: [...riskChecks, { check: 'notional-budget', pass: true, detail: `${(quantity * bestPrice).toFixed(2)} USD` }], orderId });
     const beforeRealized = botPnl?.realized ?? 0;
@@ -293,8 +307,10 @@ export class FleetManager {
 
   /** Total-equity loss brake: a UTC-day reference equity is captured at the first tick
    *  of each day; when the day's equity drawdown (marked open P&L included) reaches
-   *  equityLossBrakePct percent, NEW entries are blocked fleet-wide until the operator
-   *  intervenes. Day references are persisted, so a reboot cannot erase loss capacity. */
+   *  equityLossBrakePct percent (or equity becomes unusable), NEW entries are latched
+   *  off for that UTC day while the brake is enabled. Explicitly disabling bypasses
+   *  the latch; re-enabling the same day restores it. References and latches persist
+   *  across restarts. No bot or session authorization is changed by the brake. */
   checkEquityBrake(snapshot: PaperStatus, wall: number): { tripped: boolean; detail: string } {
     const pct = Number(this.store.get('equityLossBrakePct'));
     if (!Number.isFinite(pct) || pct <= 0) return { tripped: false, detail: 'brake disabled' };
@@ -305,17 +321,21 @@ export class FleetManager {
     const storedRef = this.store.get(key);
     let ref = storedRef == null ? Number.NaN : Number(storedRef);
     const equity = Number(snapshot.analytics.equity);
-    if (!Number.isFinite(equity) || equity <= 0) return { tripped: false, detail: 'no usable equity' };
-    if (!Number.isFinite(ref)) { this.store.set(key, equity); ref = equity; }
+    const usableEquity = snapshot.analytics.equity != null && Number.isFinite(equity) && equity > 0;
+    if (!Number.isFinite(ref) && usableEquity) { this.store.set(key, equity); ref = equity; }
     const dropPct = ref > 0 ? (ref - equity) / ref * 100 : 0;
-    const tripped = dropPct >= pct;
+    const latchKey = `equityBrakeTripped:${day}`;
+    const tripped = !!this.store.get(latchKey) || !usableEquity || dropPct >= pct;
+    if (tripped) this.store.set(latchKey, true);
+    const detail = !usableEquity ? 'no usable equity; new entries blocked' :
+      `day reference ${ref.toFixed(2)}, equity ${equity.toFixed(2)}, drawdown ${dropPct.toFixed(2)}% (limit ${pct}%)${this.store.get(latchKey) ? '; UTC-day brake latched' : ''}`;
     if (tripped && !this.store.get(`equityBrakeAudit:${day}`)) {
       this.store.set(`equityBrakeAudit:${day}`, true);
-      this.store.audit('FLEET_EQUITY_BRAKE', `UTC-day reference ${ref.toFixed(2)} USD, equity ${equity.toFixed(2)} USD, drawdown ${dropPct.toFixed(2)}% >= ${pct}%`);
+      this.store.audit('FLEET_EQUITY_BRAKE', detail);
       this.journal.record({ time: new Date(wall).toISOString(), botId: 'fleet-system', strategyId: 'system', symbol: 'all',
-        decision: 'guard-pause', rationale: `total-equity loss brake tripped: day reference ${ref.toFixed(2)} USD, equity ${equity.toFixed(2)} USD, drawdown ${dropPct.toFixed(2)}% >= ${pct}% (new entries blocked; protection unaffected)` });
+        decision: 'guard-pause', rationale: `total-equity loss brake tripped: ${detail} (new entries blocked; protection unaffected)` });
     }
-    return { tripped, detail: `day reference ${ref.toFixed(2)}, equity ${equity.toFixed(2)}, drawdown ${dropPct.toFixed(2)}% (limit ${pct}%)` };
+    return { tripped, detail };
   }
 
   /** Operator control: 0 disables, otherwise 0.1..50 percent of UTC-day reference equity. */
@@ -338,6 +358,7 @@ export class FleetManager {
     const id = `fleet-${slug}`;
     if (this.bot(id)) throw new Error(`Bot ${id} already exists`);
     const strategy = this.registry.get(body.strategyId ?? '');
+    if (strategy.researchOnly) throw new Error('Research-only strategy: replay evaluation only, not fleet automation');
     const params = validateParams(strategy, body.params ?? {});
     if (this.promotion && !this.promotion.allows(strategy, params)) throw new Error(`Strategy config not promoted by the research gate (${this.promotion.mode}); run scripts/research-promote.ts first`);
     const symbol = body.symbol;
@@ -368,6 +389,7 @@ export class FleetManager {
     if (bot.status === 'running') throw new Error('Pause the bot before editing it');
     if (body.params !== undefined || (body.strategyId !== undefined && body.strategyId !== bot.strategyId)) {
       const strategy = this.registry.get(body.strategyId ?? bot.strategyId);
+      if (strategy.researchOnly) throw new Error('Research-only strategy: replay evaluation only, not fleet automation');
       const nextParams = validateParams(strategy, body.params ?? bot.params);
       if (this.promotion && !this.promotion.allows(strategy, nextParams)) throw new Error(`Strategy config not promoted by the research gate (${this.promotion.mode}); run scripts/research-promote.ts first`);
       bot.strategyId = strategy.id;
@@ -475,7 +497,8 @@ export class FleetManager {
         const ref = Number(this.store.get(`equityDayRef:${day}`)) || null;
         const equity = snapshot ? Number(snapshot.analytics.equity) : null;
         const dropPct = ref && equity !== null && ref > 0 ? Number(((ref - equity) / ref * 100).toFixed(3)) : null;
-        return { pct, ref, equity, dropPct, tripped: pct > 0 && dropPct !== null && dropPct >= pct };
+        const invalidEquity = equity === null || !Number.isFinite(equity) || equity <= 0;
+        return { pct, ref, equity, dropPct, tripped: pct > 0 && (!!this.store.get(`equityBrakeTripped:${day}`) || invalidEquity || (dropPct !== null && dropPct >= pct)) };
       })(),
       limits: { note: 'Closer-of-closed-leg attribution; funding and open P&L are account-level. Automation authorization does not survive restart.', maxBots: 12 }
     };

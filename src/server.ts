@@ -15,6 +15,7 @@ import { DecisionJournal } from './journal';
 import { FeedHealthGuard } from './feed-health';
 import { StrategyRegistry } from './strategies/registry';
 import { builtinStrategies } from './strategies/builtin';
+import { researchStrategies } from './strategies/research';
 import { FleetManager } from './fleet';
 import { framesFromCapture, replayStrategy } from './backtest-replay';
 import { loadPromotionGate } from './promotion';
@@ -40,7 +41,7 @@ const journal = new DecisionJournal(store);
 const archive = feed.evidence ? new DataEngine(store, feed.evidence, { root: 'data/archive', keepBytes: 8 * 1024 * 1024 * 1024 }) : null;
 archive?.start();
 const strategyRegistry = new StrategyRegistry();
-for (const strategy of builtinStrategies) strategyRegistry.register(strategy);
+for (const strategy of [...builtinStrategies, ...researchStrategies]) strategyRegistry.register(strategy);
 const feedGuard = new FeedHealthGuard(store);
 const promotion = loadPromotionGate('research/promotions.json', 'research/spa_verify.py');
 const fleet = new FleetManager(store, paper, feed, journal, strategyRegistry, feedGuard, { onWatchChange: () => { void paper.refreshWatched().catch(() => {}); } }, undefined, promotion);
@@ -90,7 +91,8 @@ const alerter = new TelegramAlerter(store, journal, fetch, {
 });
 alerter.start();
 // Vault-health watchdog + evidence-database snapshots (docs/DATA_ENGINE.md).
-const health = new HealthMonitor(store, journal, { feedStatus: () => feed.status() });
+const health = new HealthMonitor(store, journal, { feedStatus: () => feed.status(),
+  durabilityStatus: () => ({ archive: archive?.status(), backup: dbBackup.status() }) });
 health.start();
 const dbBackup = new DbBackup(store, journal);
 dbBackup.start();
@@ -178,7 +180,8 @@ const server = Bun.serve({
             const result = replayStrategy({ registry: strategyRegistry, strategyId: body.strategyId, params: body.params ?? {},
               market, frames: framesFromCapture(capture), staleMs: capture.manifest.staleMs, marketStats: capture.manifest.marketStats,
               capital: body.capital ?? 10000, feeBps: Number.isInteger(body.feeBps) ? body.feeBps : 2,
-              leverage: body.leverage ?? 1, notionalPerOrderUsd: body.notionalPerOrderUsd ?? Math.min(1000, (body.capital ?? 10000) - 1), captureId });
+              leverage: body.leverage ?? 1, notionalPerOrderUsd: body.notionalPerOrderUsd ?? Math.min(1000, (body.capital ?? 10000) - 1), captureId,
+              fundingHistory: body.fundingHistory, executionDelayMs: body.executionDelayMs, maxDepthLevels: body.maxDepthLevels, worstPriceBps: body.worstPriceBps });
             return json({ id: store.saveRun({ ...result, source: 'recorded-feed-replay' } as any), result });
           }
           else return json({ error: 'Unknown endpoint' }, 404);

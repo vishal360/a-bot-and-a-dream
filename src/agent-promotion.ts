@@ -23,6 +23,8 @@ export type PromotionStats = {
   /** Mean direction-signed move per graded outcome (expectancy of the direction call
    *  before costs — accuracy is not profitability, so this is displayed beside it). */
   meanSignedMovePct?: number | null;
+  /** Invalid persisted evidence must never qualify the gate. */
+  integrityError?: string;
 };
 
 export type PromotionEvaluation = {
@@ -60,86 +62,142 @@ function exactBinomialUpperTail(successes: number, n: number, p = 0.5): number |
 
 export const UNLOCK_PHRASE = 'ENABLE AGENT PAPER ORDERS';
 
-/** Cumulative gate memory (`agentGateStats` in the store): the decision journal is a
- *  bounded 5,000-entry ring, so a promotion gate that reads ONLY the journal would
- *  see its graded count SHRINK as old outcomes roll off — a dishonest regression.
- *  One store row per UTC day (kept 90 days) accumulates the ensemble's graded
- *  outcomes forever; the journal remains the display window. */
+/** Lifetime evidence is independent of both the journal ring and recent-form rows. */
 export type GateDayStats = { graded: number; correct: number };
 export type GateStatsStore = {
-  /** LIFETIME accumulator — never pruned: the gate must not shrink with journal rolloff
-   *  (review P0-09b). `days` counts distinct UTC days ever seen. */
-  lifetime: { graded: number; correct: number; days: number; sumMovePct: number; firstDay: string; lastDay: string };
-  /** Rolling 90-day window for recent-form display. */
+  lifetime: { graded: number; correct: number; days: number; sumMovePct: number | null; firstDay: string; lastDay: string };
   byDay: Record<string, GateDayStats>;
+  /** Never pruned: revisiting an evicted display day is not a new distinct day. */
+  seenDays: string[];
+  /** Older lifetime rows may have already lost identities. Unknown interior days
+   *  cannot safely be counted again; new days beyond the old window still can. */
+  unknownDayWindow?: { first: string; last: string };
 };
 const GATE_STATS_KEY = 'agentGateStats';
 const GATE_DAYS_KEPT = 90;
+const readGateRaw = (store: Store): unknown => store.db.query('SELECT 1 FROM state WHERE key=?').get(GATE_STATS_KEY)
+  ? store.get(GATE_STATS_KEY) : undefined;
+const object = (v: unknown): v is Record<string, any> => !!v && typeof v === 'object' && !Array.isArray(v);
+const counter = (v: unknown): v is number => Number.isSafeInteger(v) && (v as number) >= 0;
+const validDay = (v: unknown): v is string => typeof v === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(v)
+  && Number.isFinite(Date.parse(`${v}T00:00:00Z`)) && new Date(`${v}T00:00:00Z`).toISOString().slice(0, 10) === v;
+const emptyStats = (integrityError?: string): PromotionStats => ({ graded: 0, correct: 0, hitRate: null,
+  distinctDays: 0, window: { first: null, last: null }, meanSignedMovePct: null, ...(integrityError ? { integrityError } : {}) });
 
-export function recordGateOutcome(store: Store, dayIso: string, correct: boolean, movePct = 0): void {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(dayIso)) throw new Error('Invalid gate stats day');
-  if (!Number.isFinite(movePct)) throw new Error('Invalid gate move');
-  const cur = (store.get(GATE_STATS_KEY) as GateStatsStore | undefined) ?? {
-    lifetime: { graded: 0, correct: 0, days: 0, sumMovePct: 0, firstDay: dayIso, lastDay: dayIso }, byDay: {},
-  };
-  if (!cur.lifetime) cur.lifetime = { graded: 0, correct: 0, days: 0, sumMovePct: 0, firstDay: dayIso, lastDay: dayIso };
+/** Validate untrusted store JSON before either migration or arithmetic. Invalid
+ *  evidence is retained for diagnosis, never silently replaced with a smaller seed. */
+function normalizeGate(raw: unknown): GateStatsStore {
+  if (!object(raw) || !object(raw.byDay)) throw new Error('Invalid gate stats');
+  const keys = Object.keys(raw.byDay).sort();
+  let graded = 0, correct = 0;
+  for (const d of keys) {
+    const row = raw.byDay[d];
+    if (!validDay(d) || !object(row) || !counter(row.graded) || row.graded === 0 || !counter(row.correct) || row.correct > row.graded) throw new Error('Invalid gate day counters');
+    graded += row.graded; correct += row.correct;
+  }
+  if (!counter(graded) || !counter(correct)) throw new Error('Invalid gate totals');
+  let life = raw.lifetime;
+  if (life === undefined) {
+    // Legacy byDay is authoritative even if more extensive than surviving history.
+    if (!keys.length) throw new Error('Empty legacy gate stats');
+    life = { graded, correct, days: keys.length, sumMovePct: null, firstDay: keys[0], lastDay: keys[keys.length - 1] };
+  }
+  if (!object(life) || !counter(life.graded) || !counter(life.correct) || life.correct > life.graded
+    || !counter(life.days) || life.days > life.graded || life.days < keys.length
+    || life.graded < graded || life.correct < correct || life.graded - life.correct < graded - correct
+    || !validDay(life.firstDay) || !validDay(life.lastDay) || life.firstDay > life.lastDay
+    || life.days > (Date.parse(`${life.lastDay}T00:00:00Z`) - Date.parse(`${life.firstDay}T00:00:00Z`)) / 86400000 + 1
+    || (life.graded > 0 && life.days === 0) || (life.days === 1 && life.firstDay !== life.lastDay)
+    || keys.some(d => d < life.firstDay || d > life.lastDay)
+    || !(life.sumMovePct === undefined || life.sumMovePct === null || (typeof life.sumMovePct === 'number' && Number.isFinite(life.sumMovePct)))) throw new Error('Invalid gate lifetime counters');
+  let seenDays: string[];
+  let unknownDayWindow = raw.unknownDayWindow;
+  if (raw.seenDays === undefined) {
+    seenDays = [...new Set([...keys, ...(life.days ? [life.firstDay, life.lastDay] : [])])].sort();
+    if (seenDays.length < life.days) unknownDayWindow = { first: life.firstDay, last: life.lastDay };
+  } else {
+    if (!Array.isArray(raw.seenDays) || raw.seenDays.some(d => !validDay(d))) throw new Error('Invalid gate day identities');
+    seenDays = [...new Set<string>(raw.seenDays)].sort();
+    if (seenDays.length !== raw.seenDays.length || keys.some(d => !seenDays.includes(d))) throw new Error('Invalid gate day identities');
+  }
+  if (seenDays.some(d => d < life.firstDay || d > life.lastDay) || seenDays.length > life.graded) throw new Error('Invalid gate day bounds');
+  if (unknownDayWindow !== undefined) {
+    if (!object(unknownDayWindow) || !validDay(unknownDayWindow.first) || !validDay(unknownDayWindow.last)
+      || unknownDayWindow.first > unknownDayWindow.last || unknownDayWindow.first < life.firstDay || unknownDayWindow.last > life.lastDay) throw new Error('Invalid gate legacy day window');
+  } else if (seenDays.length !== life.days) throw new Error('Invalid gate distinct-day count');
+  return { lifetime: { ...life, sumMovePct: life.sumMovePct ?? null } as GateStatsStore['lifetime'],
+    byDay: { ...raw.byDay }, seenDays, ...(unknownDayWindow ? { unknownDayWindow } : {}) };
+}
+
+function pruneGate(cur: GateStatsStore): void {
+  const days = Object.keys(cur.byDay).sort();
+  while (days.length > GATE_DAYS_KEPT) delete cur.byDay[days.shift()!];
+}
+
+export function recordGateOutcome(store: Store, dayIso: string, correct: boolean, movePct?: number): void {
+  if (!validDay(dayIso)) throw new Error('Invalid gate stats day');
+  if (typeof correct !== 'boolean' || (movePct !== undefined && !Number.isFinite(movePct))) throw new Error('Invalid gate outcome');
+  const raw = readGateRaw(store);
+  const cur: GateStatsStore = raw === undefined ? {
+    lifetime: { graded: 0, correct: 0, days: 0, sumMovePct: 0, firstDay: dayIso, lastDay: dayIso }, byDay: {}, seenDays: [],
+  } : normalizeGate(raw);
   cur.lifetime.graded += 1;
   if (correct) cur.lifetime.correct += 1;
-  cur.lifetime.sumMovePct += movePct;
-  if (!cur.byDay[dayIso]) cur.lifetime.days += 1;
+  cur.lifetime.sumMovePct = cur.lifetime.sumMovePct !== null && movePct !== undefined ? cur.lifetime.sumMovePct + movePct : null;
+  if (!cur.seenDays.includes(dayIso)) {
+    const unknown = cur.unknownDayWindow;
+    if (!unknown || dayIso < unknown.first || dayIso > unknown.last) cur.lifetime.days += 1;
+    cur.seenDays.push(dayIso);
+  }
   cur.lifetime.firstDay = cur.lifetime.firstDay <= dayIso ? cur.lifetime.firstDay : dayIso;
   cur.lifetime.lastDay = cur.lifetime.lastDay >= dayIso ? cur.lifetime.lastDay : dayIso;
   const day = cur.byDay[dayIso] ?? { graded: 0, correct: 0 };
   day.graded += 1;
   if (correct) day.correct += 1;
   cur.byDay[dayIso] = day;
-  const days = Object.keys(cur.byDay).sort();
-  while (days.length > GATE_DAYS_KEPT) delete cur.byDay[days.shift()!];
+  // Catch overflow as well as malformed input before persisting.
+  normalizeGate(cur);
+  pruneGate(cur);
   store.set(GATE_STATS_KEY, cur);
 }
 
 function aggregateGate(stored: GateStatsStore): PromotionStats {
   const life = stored.lifetime;
-  return {
-    graded: life.graded, correct: life.correct,
-    hitRate: life.graded ? life.correct / life.graded : null,
-    distinctDays: life.days,
-    window: { first: life.firstDay, last: life.lastDay },
-    meanSignedMovePct: life.graded ? life.sumMovePct / life.graded : null,
-  };
+  return { graded: life.graded, correct: life.correct, hitRate: life.graded ? life.correct / life.graded : null,
+    distinctDays: life.days, window: { first: life.graded ? life.firstDay : null, last: life.graded ? life.lastDay : null },
+    meanSignedMovePct: life.graded && life.sumMovePct !== null ? life.sumMovePct / life.graded : null };
 }
 
-/** Store-backed LIFETIME stats when available; on first use, seeds the store from the
- *  journal window exactly once so the pre-upgrade record is not lost. */
+/** Existing memory wins over history. Only genuinely absent memory is seeded, using
+ *  all pages of authoritative history rather than the bounded dashboard window. */
 export function loadGateStats(store: Store, journal: DecisionJournal): PromotionStats {
-  const stored = store.get(GATE_STATS_KEY) as GateStatsStore | undefined;
-  if (stored?.lifetime) return aggregateGate(stored);
-  const entries = journal.list({ botId: 'agent-ensemble', limit: 1000 }).filter(e => e.decision === 'agent-outcome').sort((a, b) => String(a.time).localeCompare(String(b.time)));
-  const byDay: Record<string, GateDayStats> = {};
-  let graded = 0, correct = 0, sumMovePct = 0;
-  const days: string[] = [];
-  for (const e of entries) {
-    const d = String(e.time).slice(0, 10);
-    if (!byDay[d]) { byDay[d] = { graded: 0, correct: 0 }; days.push(d); }
-    byDay[d].graded++; graded++;
-    const isCorrect = e.inputs?.grade === 'correct';
-    if (isCorrect) { byDay[d].correct++; correct++; }
-    const i = e.inputs as any;
-    const move = typeof i?.markAt === 'number' && typeof i?.markAtExpiry === 'number' && i.markAt > 0
-      ? (i.direction === 'long' ? 1 : i.direction === 'short' ? -1 : 0) * (i.markAtExpiry - i.markAt) / i.markAt * 100 : 0;
-    sumMovePct += move;
+  let raw: unknown;
+  try { raw = readGateRaw(store); }
+  catch { return emptyStats('Stored gate evidence is malformed; operator repair required'); }
+  if (raw !== undefined) {
+    try {
+      const stored = normalizeGate(raw);
+      pruneGate(stored);
+      store.set(GATE_STATS_KEY, stored);
+      return aggregateGate(stored);
+    } catch { return emptyStats('Stored gate evidence is malformed; operator repair required'); }
   }
-  if (days.length) {
-    store.set(GATE_STATS_KEY, {
-      lifetime: { graded, correct, days: days.length, sumMovePct, firstDay: days[0], lastDay: days[days.length - 1] },
-      byDay,
-    });
+  let cursor = 0;
+  for (;;) {
+    const entries = journal.historySinceId(cursor, 1000);
+    if (!entries.length) break;
+    for (const e of entries) {
+      cursor = e.id;
+      if (e.bot_id !== 'agent-ensemble' || e.decision !== 'agent-outcome') continue;
+      const i = e.inputs;
+      const move = typeof i?.markAt === 'number' && Number.isFinite(i.markAt) && i.markAt > 0
+        && typeof i.markAtExpiry === 'number' && Number.isFinite(i.markAtExpiry) && (i.direction === 'long' || i.direction === 'short')
+        ? (i.direction === 'long' ? 1 : -1) * (i.markAtExpiry - i.markAt) / i.markAt * 100 : undefined;
+      recordGateOutcome(store, String(e.time).slice(0, 10), i?.grade === 'correct', move);
+    }
   }
-  return {
-    graded, correct, hitRate: graded ? correct / graded : null, distinctDays: days.length,
-    window: { first: days[0] ?? null, last: days[days.length - 1] ?? null },
-    meanSignedMovePct: graded ? sumMovePct / graded : null,
-  };
+  const seeded = readGateRaw(store);
+  return seeded === undefined ? emptyStats() : aggregateGate(normalizeGate(seeded));
 }
 
 /** Reads the ENSEMBLE's graded shadow record (decision_journal rows where
@@ -165,6 +223,7 @@ export function ensemblePromotionStats(journal: DecisionJournal): PromotionStats
 export function evaluatePromotion(journal: DecisionJournal, thresholds = PROMOTION_THRESHOLDS, store?: Store): PromotionEvaluation {
   const stats = store ? loadGateStats(store, journal) : ensemblePromotionStats(journal);
   const shortfalls: string[] = [];
+  if (stats.integrityError) shortfalls.push(stats.integrityError);
   if (stats.graded < thresholds.minGraded) shortfalls.push(`graded outcomes ${stats.graded}/${thresholds.minGraded}`);
   if (stats.hitRate === null || stats.hitRate < thresholds.minHitRate) {
     shortfalls.push(`hit rate ${stats.hitRate === null ? 'n/a' : `${(stats.hitRate * 100).toFixed(1)}%`}/${(thresholds.minHitRate * 100).toFixed(0)}%`);

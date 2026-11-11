@@ -1,11 +1,10 @@
-/** Research lane v2 promotion pipeline (docs/FLEET.md, "Research promotion gate").
+/** Single-capture research SCREEN (legacy command name; never promotes).
  *
- *  Replays candidate strategy configurations over ONE exported capture (same market,
- *  same frames, no look-ahead), exports the equity curves, runs the SPA/StepM
- *  verifier (research/spa_verify.py) and - only on a PASS verdict - installs
- *  research/promotions.json, the manifest the fleet's promotion gate enforces.
- *  A FAIL verdict is archived under research/verdicts/ (git-ignored) and installs
- *  nothing: no verdict, no promotion.
+ *  Replays candidates over ONE capture and archives a SPA/StepM screen. Even PASS
+ *  is in-sample evidence, not untouched independent holdout or production-like
+ *  research approval. This command NEVER writes research/promotions.json; existing
+ *  PAPER allowlists are left untouched. No manifest remains explicitly unverified
+ *  PAPER experimentation, not an implicit research approval.
  *
  *  Usage:
  *    bun run scripts/research-promote.ts --capture <exported-capture.json> --market SYMBOL
@@ -15,14 +14,16 @@
  *
  *  --configs is a JSON array of { "strategyId": "...", "params": {...} } (at least 2
  *  entries; the default is the three built-ins at their default params). */
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, join, resolve } from 'node:path';
 import { replayCapture, type ReplayCapture } from '../src/lighter-evidence';
 import { REPLAY_SIMULATOR_VERSION, framesFromCapture, replayStrategy } from '../src/backtest-replay';
 import { builtinStrategies } from '../src/strategies/builtin';
+import { researchStrategies } from '../src/strategies/research';
+import type { ReplayFundingHistory } from '../src/replay-funding';
 import { StrategyRegistry, artifactHash } from '../src/strategies/registry';
 import { validateParams } from '../src/strategies/types';
-import { configId, loadPromotionGate, sha256File, type PromotionManifest } from '../src/promotion';
+import { configId, loadPromotionGate, sha256File, manifestErrors, type PromotionManifest } from '../src/promotion';
 
 const root = resolve(import.meta.dir, '..');
 const args = process.argv.slice(2);
@@ -40,7 +41,7 @@ const num = (name: string, fallback: number): number => {
 };
 
 const registry = new StrategyRegistry();
-for (const strategy of builtinStrategies) registry.register(strategy);
+for (const strategy of [...builtinStrategies, ...researchStrategies]) registry.register(strategy);
 
 if (args.includes('--check')) {
   const gate = loadPromotionGate(join(root, 'research', 'promotions.json'), join(root, 'research', 'spa_verify.py'));
@@ -65,6 +66,13 @@ if (!market) {
   throw new Error(`Capture does not include market ${marketSymbol}; it has: ${capture.manifest.markets.map((m: any) => m.symbol).join(', ')}`);
 }
 const frames = framesFromCapture(capture);
+const fundingPath = arg('funding');
+let fundingHistory: ReplayFundingHistory | undefined;
+if (fundingPath) {
+  const file = Bun.file(resolve(fundingPath));
+  if (file.size > 2 * 1024 * 1024) throw new Error('Funding evidence exceeds 2MiB');
+  fundingHistory = await file.json(); // replay validates identity, digest, coverage and finality-policy bounds
+}
 
 // 2. Candidate configurations. Defaults cover every built-in at its default params.
 type Candidate = { strategyId: string; params: Record<string, number> };
@@ -101,14 +109,14 @@ const results = candidates.map(candidate => ({
   resolvedParams: validateParams(registry.get(candidate.strategyId), candidate.params),
   replay: replayStrategy({ registry, strategyId: candidate.strategyId, params: candidate.params, market, frames,
     staleMs: capture.manifest.staleMs, marketStats: capture.manifest.marketStats,
-    capital, feeBps, leverage, notionalPerOrderUsd, executionDelayMs, maxDepthLevels, worstPriceBps }),
+    capital, feeBps, leverage, notionalPerOrderUsd, executionDelayMs, maxDepthLevels, worstPriceBps, fundingHistory }),
 }));
-// Funding-dependent strategies over a capture with zero funding samples are NOT graded:
-// missing funding is never treated as zero funding (review P0-02).
+// Funding rates are not settlement cashflows. Funding-dependent strategies remain
+// ineligible until the replay has a verified venue settlement model, even with samples.
 const ineligible = results.filter(result => result.replay.fundingIneligible);
-if (ineligible.length) console.log(JSON.stringify({ fundingIneligible: ineligible.map(result => result.id), reason: 'capture has zero funding samples; funding-dependent strategies are not graded' }));
+if (ineligible.length) console.log(JSON.stringify({ fundingIneligible: ineligible.map(result => result.id), reason: 'funding-dependent strategies are not graded without a verified venue settlement model; rate samples alone are insufficient' }));
 const gradedResults = results.filter(result => !result.replay.fundingIneligible);
-if (gradedResults.length < 2) throw new Error('Fewer than 2 eligible configurations after funding-ineligibility exclusion; record a capture with funding data for funding-dependent strategies');
+if (gradedResults.length < 2) throw new Error('Fewer than 2 eligible configurations after funding-ineligibility exclusion; funding-dependent strategies require a verified venue settlement model, not merely more rate samples');
 const lengths = gradedResults.map(result => result.replay.equity.length);
 if (new Set(lengths).size !== 1) {
   throw new Error(`Equity curves misaligned (${results.map(result => `${result.id}: ${result.replay.equity.length}`).join(', ')}); all configs must share one capture and market`);
@@ -136,6 +144,7 @@ if (!existsSync(pythonPath)) {
 }
 const reps = Math.trunc(num('reps', 2000));
 const alpha = num('alpha', 0.05);
+if (reps < 100 || !(alpha > 0 && alpha < 1)) throw new Error('Screen requires --reps >= 100 and 0 < --alpha < 1');
 const run = Bun.spawnSync([pythonPath, spaPath, '--input', inputPath, '--output', verdictPath,
   '--reps', String(reps), '--alpha', String(alpha)], { cwd: root, stdout: 'pipe', stderr: 'pipe' });
 if (!existsSync(verdictPath)) {
@@ -144,12 +153,20 @@ if (!existsSync(verdictPath)) {
 const verdict = JSON.parse(readFileSync(verdictPath, 'utf8'));
 const verdictSha256 = new Bun.CryptoHasher('sha256').update(readFileSync(verdictPath)).digest('hex');
 
-// 5. Only a PASS installs the manifest; a FAIL is evidence, not promotion.
+// 5. Validate the screen output, but NEVER convert an in-sample PASS to approval.
+if (run.exitCode !== (verdict.verdict === 'PASS' ? 0 : 1)) throw new Error('Verifier exit status disagrees with verdict');
+if (verdict.alpha !== alpha || verdict.reps !== reps || verdict.samples !== lengths[0] - 1 ||
+    !Array.isArray(verdict.ids) || JSON.stringify(verdict.ids) !== JSON.stringify(gradedResults.map(result => result.id)) ||
+    verdict.configs !== gradedResults.length || !Array.isArray(verdict.stepm_survivors) ||
+    new Set(verdict.stepm_survivors).size !== verdict.stepm_survivors.length) throw new Error('Verifier output does not match submitted screen');
+const screenOnly = { installed: false, canPromote: false, paperOnly: true, researchApproved: false,
+  independentHoldout: false, evidenceKind: 'single-capture-spa-screen',
+  reason: 'Single-capture SPA is in-sample screening, not independent holdout evidence; no research approval or promotion is installed.' } as const;
 if (verdict.verdict !== 'PASS') {
-  console.log(JSON.stringify({ installed: false, verdict: verdict.verdict, reasons: verdict.reasons, verdictFile: verdictPath }, null, 2));
+  console.log(JSON.stringify({ ...screenOnly, verdict: verdict.verdict, reasons: verdict.reasons, verdictFile: verdictPath }, null, 2));
   process.exit(1);
 }
-const byId = new Map(results.map(result => [result.id, result]));
+const byId = new Map(gradedResults.map(result => [result.id, result]));
 const entries = (verdict.stepm_survivors as string[]).map(id => {
   const result = byId.get(id);
   if (!result) throw new Error(`Verifier named unknown survivor: ${id}`);
@@ -175,8 +192,10 @@ const manifest: PromotionManifest = {
   verdictSha256,
   entries,
 };
-const manifestPath = join(root, 'research', 'promotions.json');
-const tmpPath = `${manifestPath}.tmp`;
-writeFileSync(tmpPath, `${JSON.stringify(manifest, null, 1)}\n`, { encoding: 'utf8' });
-renameSync(tmpPath, manifestPath);
-console.log(JSON.stringify({ installed: true, manifest: manifestPath, promoted: entries.map(entry => entry.strategyId), spaPvalue: verdict.spa_pvalue, samples: verdict.samples, verdictFile: verdictPath }, null, 2));
+const errors = manifestErrors(manifest);
+if (errors.length) throw new Error(`Invalid screen artifact: ${errors.join('; ')}`);
+// Archive provenance/envelope as a NON-installable screen, not a promotion manifest.
+const screenPath = join(verdictsDir, `${stamp}-screen.json`);
+writeFileSync(screenPath, `${JSON.stringify({ ...screenOnly, screen: manifest, verdictFile: verdictPath }, null, 1)}\n`, { encoding: 'utf8' });
+console.log(JSON.stringify({ ...screenOnly, screenFile: screenPath, survivors: entries.map(entry => entry.strategyId), spaPvalue: verdict.spa_pvalue, samples: verdict.samples, verdictFile: verdictPath }, null, 2));
+process.exit(1); // Successful screening is still a refused promotion request.

@@ -1,9 +1,19 @@
-import { test, expect } from 'bun:test';
+import { test, expect, beforeEach, afterEach } from 'bun:test';
 import { Store } from '../src/store';
 import { DecisionJournal } from '../src/journal';
 import { AgentRuntime, DEFAULT_AGENTS, extractProposalJson } from '../src/agent-runtime';
 import { buildProposal, proposalExpired, validateProposalFields, validateStoredProposal } from '../src/agent-contract';
 import { ensembleDirection } from '../src/agent-ensemble';
+
+let savedGeminiApiKey: string | undefined;
+beforeEach(() => {
+  savedGeminiApiKey = process.env.GEMINI_API_KEY;
+  process.env.GEMINI_API_KEY = 'test-only-fake-gemini-key';
+});
+afterEach(() => {
+  if (savedGeminiApiKey === undefined) delete process.env.GEMINI_API_KEY;
+  else process.env.GEMINI_API_KEY = savedGeminiApiKey;
+});
 
 let clock = Date.parse('2026-10-30T12:00:00Z');
 const now = () => clock;
@@ -97,12 +107,48 @@ test('shadows expire into journaled outcomes graded against the real mark', asyn
     expect(result.shadowsClosed).toBe(4); // 1 ensemble + 3 persona opinions graded
     const outcomes = journal.list({ botId: 'agent-ensemble', limit: 10 }).filter((r: any) => r.decision === 'agent-outcome');
     expect(outcomes).toHaveLength(1);
+    expect(runtime.status().execution.stats.graded).toBe(1);
+    expect(outcomes[0].inputs.labelLagMs).toBe(1000);
     expect(outcomes[0].rationale).toContain('direction correct');
     const personaOutcomes = journal.list({ limit: 20 }).filter((r: any) => r.decision === 'agent-outcome' && r.bot_id !== 'agent-ensemble');
     expect(personaOutcomes.length).toBe(3);
     const momentum = personaOutcomes.find((r: any) => r.bot_id === 'agent-gemini-momentum')!;
     expect(momentum.inputs.grade).toBe('correct'); // long from 100 to 103
     expect((runtime as any).status().personaPending).toBe(3); // the fresh cycle opened 3 new persona votes
+  } finally { close(); }
+});
+
+test('late expiry endpoints are censored instead of changing the prediction horizon', async () => {
+  const { s, journal, runtime, close } = harness(() => contract());
+  try {
+    runtime.enable({ confirm: 'ENABLE AGENT SHADOW' });
+    await runtime.tick();
+    tickClock(961000);
+    (runtime as any).expireShadows();
+    expect(journal.list({ limit: 100 }).filter(e => e.decision === 'agent-outcome')).toHaveLength(0);
+    const censored = journal.list({ limit: 100 }).filter(e => e.inputs?.grade === 'censored');
+    expect(censored).toHaveLength(4);
+    expect(censored[0].inputs.labelLagMs).toBe(61000);
+    expect(s.get('agentShadowPending')).toHaveLength(0);
+    expect(runtime.status().execution.stats.graded).toBe(0);
+  } finally { close(); }
+});
+
+test('outcome counters and pending removal roll back together on storage failure', async () => {
+  const { s, journal, runtime, close } = harness(() => contract());
+  try {
+    runtime.enable({ confirm: 'ENABLE AGENT SHADOW' });
+    await runtime.tick();
+    tickClock(901000);
+    s.db.exec("CREATE TRIGGER reject_pending BEFORE UPDATE ON state WHEN NEW.key='agentShadowPending' BEGIN SELECT RAISE(ABORT, 'pending unavailable'); END");
+    // Store.set uses INSERT OR REPLACE, so reject inserts as well.
+    s.db.exec("CREATE TRIGGER reject_pending_insert BEFORE INSERT ON state WHEN NEW.key='agentShadowPending' BEGIN SELECT RAISE(ABORT, 'pending unavailable'); END");
+    expect(() => (runtime as any).expireShadows()).toThrow('pending unavailable');
+    expect(journal.list({ limit: 100 }).filter(e => e.decision === 'agent-outcome')).toHaveLength(0);
+    expect(s.get('agentShadowPending')).toHaveLength(1);
+    s.db.exec('DROP TRIGGER reject_pending; DROP TRIGGER reject_pending_insert');
+    (runtime as any).expireShadows();
+    expect(journal.list({ botId: 'agent-ensemble', limit: 100 }).filter(e => e.decision === 'agent-outcome')).toHaveLength(1);
   } finally { close(); }
 });
 

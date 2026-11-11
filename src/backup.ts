@@ -1,4 +1,6 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, renameSync, unlinkSync } from 'node:fs';
+import { randomUUID } from 'node:crypto';
+import { assertSafePath, copyAndVerify, createManifest, verifyBackup, verifiedIndependentCopy, writeManifest, type IndependentCopyVerifier } from './backup-verification';
 import { join } from 'node:path';
 import { Database } from 'bun:sqlite';
 import type { Store } from './store';
@@ -6,6 +8,7 @@ import type { DecisionJournal } from './journal';
 
 export type DbBackupOptions = {
   dbPath?: string;
+  independentCopyVerifier?: IndependentCopyVerifier;
   localDir?: string;
   driveDir?: string | null;
   keep?: number;
@@ -17,16 +20,7 @@ export type DbBackupOptions = {
   now?: () => number;
 };
 
-/** Durable off-machine backup of the evidence database (docs/DATA_ENGINE.md):
- *  `VACUUM INTO` produces a compacted, transactionally consistent snapshot of
- *  terminal.sqlite WITHOUT blocking the live writers for more than the moment the
- *  statement runs — the live database is never modified. Each snapshot lands locally
- *  (data/backups/db) and, when the Drive root exists, is copied to the mirror's
- *  drive folder; the newest `keep` (default 7) are kept in both places.
- *
- *  Quiet success, loud failure: a good backup only bumps status + an audit line;
- *  a failed backup journals `health-alert` so the Telegram alerter pushes it. The
- *  database contains no secrets (the Gemini key lives in .env, never in sqlite). */
+/** Atomic local snapshots; mounted copies are not offsite verification. Sensitive data encryption is not implemented. */
 export class DbBackup {
   private timer: ReturnType<typeof setInterval> | null = null;
   private firstTimer: ReturnType<typeof setTimeout> | null = null;
@@ -44,11 +38,13 @@ export class DbBackup {
   private lastRunAt: string | null = null;
   private lastResult: { ok: boolean; file?: string; error?: string } | null = null;
   private successCount = 0;
+  private retentionBlocked = false;
+  private verification = { localVerified: false, mountedCopyVerified: false, remoteVerified: false };
 
-  constructor(private store: Store, private journal: DecisionJournal, options: DbBackupOptions = {}) {
+  constructor(private store: Store, private journal: DecisionJournal, private options: DbBackupOptions = {}) {
     this.dbPath = options.dbPath ?? 'data/terminal.sqlite';
     this.localDir = options.localDir ?? 'data/backups/db';
-    this.driveDir = options.driveDir === undefined ? 'G:/My Drive/ABAD-archive/db-backups' : options.driveDir;
+    this.driveDir = options.driveDir ?? null;
     this.keep = options.keep ?? 7;
     this.intervalMs = options.intervalMs ?? 6 * 3600 * 1000;
     this.firstRunMs = options.firstRunMs ?? 5 * 60 * 1000;
@@ -99,30 +95,36 @@ export class DbBackup {
     this.busy = true;
     try {
       if (!existsSync(this.dbPath)) return this.fail(`database missing at ${this.dbPath}`);
+      assertSafePath(this.dbPath);
+      assertSafePath(this.localDir);
       mkdirSync(this.localDir, { recursive: true });
+      this.verification = { localVerified: false, mountedCopyVerified: false, remoteVerified: false };
       const stamp = new Date(this.now()).toISOString().replace(/[:.]/g, '-');
-      const file = join(this.localDir, `terminal-${stamp}.sqlite`);
-      // VACUUM INTO from a read-only source connection: the live db is untouched,
-      // and a corrupt source fails here instead of producing a bad snapshot.
-      const source = new Database(this.dbPath, { readonly: true });
-      try { source.run('VACUUM INTO ?', [file]); } finally { source.close(); }
-      if (!existsSync(file) || statSync(file).size < 4096) return this.fail('snapshot missing or implausibly small after VACUUM INTO');
+      const file = join(this.localDir, `terminal-${stamp}-${randomUUID()}.sqlite`);
+      const tmp = `${file}.tmp`;
+      try {
+        const source = new Database(this.dbPath, { readonly: true });
+        try { source.run('VACUUM INTO ?', [tmp]); } finally { source.close(); }
+        const manifest = createManifest(tmp, 'sqlite'); // independent read-only connection
+        renameSync(tmp, file);
+        writeManifest(file, { ...manifest, file: file.split(/[\\/]/).pop()! });
+        verifyBackup(file);
+      } finally { if (existsSync(tmp)) unlinkSync(tmp); }
+      this.verification.localVerified = true;
       if (this.driveDir) {
         try {
-          // The drive path is configured, so a copy is REQUIRED: create it and copy.
-          // A failure (Drive unmounted, permissions) is a loud failure, not silent local-only.
-          mkdirSync(this.driveDir, { recursive: true });
-          copyFileSync(file, join(this.driveDir, `terminal-${stamp}.sqlite`));
+          assertSafePath(this.driveDir);
+          copyAndVerify(file, join(this.driveDir, file.split(/[\\/]/).pop()!), verifyBackup(file));
+          this.verification.mountedCopyVerified = true;
         } catch (error) {
           return this.fail(`local snapshot ok but Drive copy failed: ${(error as Error).message}`.slice(0, 400), file);
         }
       }
       this.prune(this.localDir);
-      if (this.driveDir && existsSync(this.driveDir)) this.prune(this.driveDir);
       this.successCount++;
       this.lastRunAt = new Date(this.now()).toISOString();
       this.lastResult = { ok: true, file };
-      this.store.audit('DB_BACKUP_OK', `snapshot ${file} (+ Drive copy)`);
+      this.store.audit('DB_BACKUP_OK', `snapshot ${file}; local verified, mounted-copy=${this.verification.mountedCopyVerified}; remote verification not configured by default`);
       return this.lastResult;
     } catch (error) {
       return this.fail((error as Error).message);
@@ -131,7 +133,7 @@ export class DbBackup {
 
   private fail(message: string, file?: string): { ok: boolean; file?: string; error?: string } {
     this.lastRunAt = new Date(this.now()).toISOString();
-    this.lastResult = { ok: false, error: message };
+    this.lastResult = { ok: false, error: message, ...(file ? { file } : {}) };
     try {
       this.journal.record({
         time: this.lastRunAt, botId: 'system-health', strategyId: 'system-health', symbol: 'all',
@@ -144,12 +146,25 @@ export class DbBackup {
   }
 
   private prune(dir: string) {
-    const files = readdirSync(dir).filter(f => /^terminal-\d{4}-\d{2}-\d{2}T.*\.sqlite$/.test(f)).sort();
-    while (files.length > this.keep) unlinkSync(join(dir, files.shift()!));
+    assertSafePath(dir);
+    const files = readdirSync(dir).filter(f => /^terminal-\d{4}-.*\.sqlite$/.test(f)).sort();
+    this.retentionBlocked = false;
+    for (const name of files.slice(0, Math.max(0, files.length - this.keep))) {
+      const file = assertSafePath(join(dir, name), dir);
+      try {
+        const manifest = verifyBackup(file);
+        const receipt = verifiedIndependentCopy(file, manifest, this.options.independentCopyVerifier);
+        if (!receipt) { this.retentionBlocked = true; continue; }
+        // Adapter must verify independent readback for this exact object's current bytes.
+        this.store.audit('DB_BACKUP_RETENTION_RECEIPT', JSON.stringify(receipt));
+        unlinkSync(file); unlinkSync(`${file}.manifest.json`);
+      } catch { this.retentionBlocked = true; }
+    }
   }
 
   status() {
     return {
+      verification: { ...this.verification }, retentionBlocked: this.retentionBlocked, diskPressure: this.retentionBlocked, encryption: 'not-implemented',
       dbPath: this.dbPath, localDir: this.localDir, driveDir: this.driveDir, keep: this.keep,
       intervalMs: this.intervalMs, firstRunMs: this.firstRunMs, noSuccessAlertMs: this.noSuccessAlertMs,
       startedAt: this.startedAt ? new Date(this.startedAt).toISOString() : null,

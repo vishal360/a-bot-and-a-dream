@@ -1,7 +1,7 @@
 import { test, expect } from 'bun:test';
 import { Store } from '../src/store';
 import { DecisionJournal } from '../src/journal';
-import { evaluatePromotion, loadGateStats, recordGateOutcome } from '../src/agent-promotion';
+import { AgentPromotion, UNLOCK_PHRASE, evaluatePromotion, loadGateStats, recordGateOutcome } from '../src/agent-promotion';
 
 const gradeInto = (j: DecisionJournal, day: string, grade: string) => j.record({
   time: `${day}T12:00:00Z`, botId: 'agent-ensemble', strategyId: 'agent-llm', symbol: 'BTC',
@@ -9,7 +9,7 @@ const gradeInto = (j: DecisionJournal, day: string, grade: string) => j.record({
   inputs: { markAt: 100, markAtExpiry: grade === 'correct' ? 101 : 99, direction: 'long', confidence: 0.8, grade },
 });
 
-test('gate memory seeds once from the journal window, then accumulates independently', () => {
+test('gate memory seeds once from durable history, then accumulates independently', () => {
   const s = new Store(':memory:'), j = new DecisionJournal(s);
   gradeInto(j, '2026-11-05', 'correct'); gradeInto(j, '2026-11-05', 'wrong'); gradeInto(j, '2026-11-06', 'correct');
   const first = evaluatePromotion(j, undefined, s); // seeds lifetime + rolling from journal
@@ -48,6 +48,95 @@ test('gate memory survives full journal rolloff AND its own 90-day rolling prune
   expect(stats.window.first).toBe('2026-11-05'); // lifetime first day, not the pruned window
   const stored = s.get('agentGateStats') as any;
   expect(Object.keys(stored.byDay)).toHaveLength(90); // rolling window still bounded
+  // Re-open from persisted state and grade a day long since evicted from display.
+  const restartedJournal = new DecisionJournal(s);
+  recordGateOutcome(s, '2026-11-05', false, -1);
+  recordGateOutcome(s, '2026-11-05', true, 1);
+  const revisited = loadGateStats(s, restartedJournal);
+  expect(revisited.graded).toBe(104);
+  expect(revisited.distinctDays).toBe(102);
+  expect(Object.keys((s.get('agentGateStats') as any).byDay)).toHaveLength(90);
+});
+
+test('legacy byDay counts outweigh the surviving journal and migrate without invented moves', () => {
+  for (const recordFirst of [false, true]) {
+    const s = new Store(':memory:'), j = new DecisionJournal(s);
+    gradeInto(j, '2026-11-05', 'wrong');
+    s.set('agentGateStats', { byDay: {
+      '2026-11-01': { graded: 1200, correct: 800 },
+      '2026-11-02': { graded: 100, correct: 80 },
+      '2026-11-03': { graded: 100, correct: 80 },
+    } });
+    if (recordFirst) recordGateOutcome(s, '2026-11-04', true, 3);
+    const stats = loadGateStats(s, j);
+    expect(stats.graded).toBe(1400 + Number(recordFirst));
+    expect(stats.correct).toBe(960 + Number(recordFirst));
+    expect(stats.distinctDays).toBe(3 + Number(recordFirst));
+    expect(stats.meanSignedMovePct).toBeNull();
+    expect(evaluatePromotion(j, undefined, s).eligible).toBe(true);
+    recordGateOutcome(s, '2026-11-05', true, 4);
+    expect(loadGateStats(s, j).meanSignedMovePct).toBeNull();
+  }
+});
+
+test('old lifetime migration conservatively avoids recounting unidentifiable pruned days', () => {
+  const s = new Store(':memory:'), j = new DecisionJournal(s);
+  s.set('agentGateStats', { lifetime: { graded: 100, correct: 60, days: 100, sumMovePct: 5,
+    firstDay: '2026-01-01', lastDay: '2026-04-10' }, byDay: { '2026-04-10': { graded: 1, correct: 1 } } });
+  recordGateOutcome(s, '2026-01-02', true, 1);
+  recordGateOutcome(s, '2026-01-02', true, 1);
+  expect(loadGateStats(s, j).distinctDays).toBe(100);
+  recordGateOutcome(s, '2026-04-11', true, 1);
+  expect(loadGateStats(s, j).distinctDays).toBe(101);
+});
+
+test('absent memory seeds every durable history page even after ring eviction', () => {
+  const s = new Store(':memory:'), j = new DecisionJournal(s, 100, null);
+  for (let i = 0; i < 1105; i++) gradeInto(j, '2026-11-05', 'correct');
+  expect(j.list({ limit: 1000 })).toHaveLength(100);
+  expect(loadGateStats(s, j).graded).toBe(1105);
+  expect(loadGateStats(s, j).meanSignedMovePct).toBe(1);
+});
+
+test('missing move evidence stays unknown rather than becoming a zero move', () => {
+  const s = new Store(':memory:'), j = new DecisionJournal(s);
+  recordGateOutcome(s, '2026-11-05', true);
+  recordGateOutcome(s, '2026-11-06', true, 2);
+  expect(loadGateStats(s, j).meanSignedMovePct).toBeNull();
+});
+
+test('malformed stored stats fail closed, are not reseeded and cannot unlock paper', () => {
+  const life = { graded: 100, correct: 60, days: 3, sumMovePct: 1, firstDay: '2026-11-01', lastDay: '2026-11-03' };
+  const byDay = { '2026-11-01': { graded: 30, correct: 20 }, '2026-11-02': { graded: 30, correct: 20 }, '2026-11-03': { graded: 40, correct: 20 } };
+  const malformed = [null, [], {}, { byDay: null }, { byDay: { '2026-11-01': { graded: '100', correct: 100 } } },
+    ...[{ graded: '100' }, { graded: -1 }, { graded: 100.5 }, { graded: Number.MAX_SAFE_INTEGER + 1 },
+      { correct: 101 }, { days: 101 }, { days: '3' }, { sumMovePct: '100' }, { firstDay: '2026-02-30' }]
+      .map(change => ({ lifetime: { ...life, ...change }, byDay })),
+    { lifetime: life, byDay, seenDays: ['2026-11-01'] },
+    { lifetime: life, byDay, seenDays: ['2026-11-01', '2026-11-02', '2026-11-03', '2026-11-03'] },
+  ];
+  for (const raw of malformed) {
+    const s = new Store(':memory:'), j = new DecisionJournal(s);
+    s.set('agentGateStats', raw);
+    gradeInto(j, '2026-11-05', 'correct');
+    const result = evaluatePromotion(j, undefined, s);
+    expect(result.eligible).toBe(false);
+    expect(result.shortfalls.join(' ')).toContain('malformed');
+    expect(result.statistics.meanSignedMovePct).toBeNull();
+    expect(s.get('agentGateStats')).toEqual(raw);
+    expect(() => recordGateOutcome(s, '2026-11-06', true, 1)).toThrow();
+    expect(() => new AgentPromotion(s, j).unlock({ confirm: UNLOCK_PHRASE })).toThrow('Promotion gate refuses');
+    expect(s.get('agentExecEnabled')).not.toBe(true);
+  }
+});
+
+test('non-JSON stored evidence also blocks eligibility without replacement', () => {
+  const s = new Store(':memory:'), j = new DecisionJournal(s);
+  s.db.query('INSERT INTO state VALUES (?,?)').run('agentGateStats', '{broken');
+  const evaluation = evaluatePromotion(j, undefined, s);
+  expect(evaluation.eligible).toBe(false);
+  expect(evaluation.shortfalls.join(' ')).toContain('malformed');
+  expect(() => recordGateOutcome(s, '2026-11-06', true, 1)).toThrow();
 });
 
 test('the gate statistics report the fair-coin binomial p-value and the honesty note', () => {

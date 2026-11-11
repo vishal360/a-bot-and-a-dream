@@ -38,7 +38,18 @@ export class DecisionJournal {
       id INTEGER PRIMARY KEY AUTOINCREMENT, time TEXT NOT NULL, bot_id TEXT NOT NULL, strategy_id TEXT NOT NULL,
       strategy_hash TEXT, symbol TEXT NOT NULL, decision TEXT NOT NULL, side TEXT, quantity REAL, price REAL,
       rationale TEXT, inputs TEXT, risk_checks TEXT, order_id TEXT, error TEXT);
-      CREATE INDEX IF NOT EXISTS decision_journal_bot ON decision_journal (bot_id, id);`);
+      CREATE INDEX IF NOT EXISTS decision_journal_bot ON decision_journal (bot_id, id);
+      CREATE TABLE IF NOT EXISTS decision_history AS SELECT * FROM decision_journal WHERE 0;
+      CREATE UNIQUE INDEX IF NOT EXISTS decision_history_id ON decision_history (id);`);
+    store.db.transaction(() => {
+      store.db.exec('INSERT OR IGNORE INTO decision_history SELECT * FROM decision_journal');
+      // Migration cannot recover old evictions. Record its known boundary explicitly.
+      if (store.get('decisionHistoryProvenance') === null) {
+        const bounds = store.db.query('SELECT MIN(id) AS firstId, MAX(id) AS lastId, COUNT(*) AS rows FROM decision_history').get();
+        store.set('decisionHistoryProvenance', { version: 1, initializedAt: new Date().toISOString(), migrated: bounds,
+          priorEvictionsRecovered: false, completeness: 'retained rows plus all subsequent committed decisions' });
+      }
+    }).immediate();
   }
   record(entry: DecisionEntry) {
     if (!(entry.time && Date.parse(entry.time)) || !ID.test(entry.botId) || !STRATEGY.test(entry.strategyId) ||
@@ -57,6 +68,9 @@ export class DecisionJournal {
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(entry.time, entry.botId, entry.strategyId, bounded(entry.strategyHash ?? null, 128), entry.symbol,
         entry.decision, entry.side ?? null, entry.quantity ?? null, entry.price ?? null, entry.rationale ?? null,
         inputs, checks, bounded(entry.orderId ?? null, 80), entry.error ?? null);
+      // Authoritative append-only history shares the ring INSERT transaction. A JSONL
+      // export is only a secondary copy: export failure must never destroy evidence.
+      this.store.db.query('INSERT INTO decision_history SELECT * FROM decision_journal WHERE id=last_insert_rowid()').run();
       if (this.archiveDir) {
         // Capture the rows about to leave the bounded ring: the dashboard journal is a
         // view; the append-only archive is the durable decision record (review P0-06).
@@ -67,9 +81,9 @@ export class DecisionJournal {
     if (evicted.length) this.spillToArchive(evicted);
   }
 
-  /** Append-only spillway: evicted journal rows land in
-   *  data/journal-archive/journal-<YYYY-MM>.jsonl before they leave the ring. A spill
-   *  failure never breaks recording — it is counted and surfaced via archiveStatus(). */
+  /** Best-effort JSONL secondary export after commit. Every row is already retained
+   *  atomically in decision_history before the bounded dashboard ring is pruned.
+   *  Export failures are surfaced; they cannot delete the authoritative evidence. */
   private spillToArchive(rows: any[]) {
     if (!this.archiveDir || !rows.length) return;
     try {
@@ -82,7 +96,18 @@ export class DecisionJournal {
     }
   }
 
-  archiveStatus() { return { dir: this.archiveDir, failures: this.archiveFailures, lastError: this.lastArchiveError }; }
+  archiveStatus() {
+    const historyRows = (this.store.db.query('SELECT COUNT(*) AS n FROM decision_history').get() as { n: number }).n;
+    return { dir: this.archiveDir, failures: this.archiveFailures, lastError: this.lastArchiveError, historyRows,
+      authoritativeStorage: 'sqlite-decision-history', exportIsSecondary: true, provenance: this.store.get('decisionHistoryProvenance') };
+  }
+  /** Durable cursor-based evidence access, independent of dashboard eviction. */
+  historySinceId(afterId: number, limit = 1000) {
+    if (!Number.isSafeInteger(afterId) || afterId < 0) throw new Error('Invalid journal cursor');
+    if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid journal query limit');
+    return (this.store.db.query('SELECT * FROM decision_history WHERE id > ? ORDER BY id ASC LIMIT ?').all(afterId, limit) as any[])
+      .map(r => ({ ...r, inputs: r.inputs ? JSON.parse(r.inputs) : null, risk_checks: r.risk_checks ? JSON.parse(r.risk_checks) : null }));
+  }
   list(options: { botId?: string; limit?: number } = {}) {
     const limit = options.limit ?? 200;
     if (!Number.isInteger(limit) || limit < 1 || limit > 1000) throw new Error('Invalid journal query limit');

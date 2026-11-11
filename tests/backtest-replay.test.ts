@@ -1,4 +1,4 @@
-﻿import { test, expect } from 'bun:test';
+import { test, expect } from 'bun:test';
 import { replayStrategy, framesFromCapture } from '../src/backtest-replay';
 import { StrategyRegistry } from '../src/strategies/registry';
 import { breakoutV1 } from '../src/strategies/builtin';
@@ -86,4 +86,169 @@ test('replay validates inputs and frame ordering fail-closed', () => {
 test('framesFromCapture maps capture records for replay', () => {
   const frames = framesFromCapture({ manifest: {} as any, frames: [{ sequence: 1, clock: { wall: 5, mono: 0.5 }, raw: 'x' }], sha256: 'h' });
   expect(frames).toEqual([{ wall: 5, mono: 0.5, raw: 'x' }]);
+});
+import type { Strategy, StrategyContext, StrategyProposal } from '../src/strategies/types';
+
+function scripted(evaluate: (ctx: StrategyContext) => StrategyProposal, prices: number[], overrides: any = {}) {
+  const registry = new StrategyRegistry();
+  registry.register({ id: 'scripted', name: 'scripted', description: 'fixture', params: [], evaluate } satisfies Strategy);
+  const frames = prices.map((price, i) => ({ wall: BASE + i * 100, mono: i * 100,
+    raw: bookFrame(i * 100, i + 1, price, i === 0, prices[i - 1]) }));
+  return replayStrategy({ registry, strategyId: 'scripted', params: {}, market, frames, staleMs: 5000,
+    marketStats: false, capital: 10000, feeBps: 0, leverage: 1, notionalPerOrderUsd: 100,
+    executionDelayMs: 100, worstPriceBps: 1000, ...overrides });
+}
+const hold = { action: 'hold', rationale: 'wait' } as const;
+
+test('pending arrival is not overwritten by fast frames or a later hold', () => {
+  const seen: StrategyContext[] = [];
+  const result = scripted(ctx => {
+    seen.push(ctx);
+    return seen.length === 1 ? { action: 'open', side: 'buy', rationale: 'first decision' } : hold;
+  }, [100, 100, 100, 100, 100], { executionDelayMs: 300 });
+  expect(seen.map(ctx => Date.parse(ctx.now) - BASE)).toEqual([0, 300, 400]);
+  expect(seen[1].position?.quantity).toBeCloseTo(0.998, 8);
+  expect(result.feesUsd).toBe(0);
+  expect(result.trades).toHaveLength(0);
+  expect(result.warnings.some(w => w.includes('remains open'))).toBe(true);
+});
+
+test('valid but stale-separated book frames cannot fill an order across a data gap', () => {
+  const frames = [0, 10000].map((offset, i) => ({ wall: BASE + offset, mono: offset,
+    raw: bookFrame(offset, i + 1, 100, i === 0, 100) }));
+  let calls = 0;
+  const result = scripted(() => ++calls === 1 ? { action: 'open', side: 'buy', rationale: 'pre-gap' } : hold,
+    [100, 100], { frames });
+  expect(result.execution.rejects).toBe(1);
+  expect(result.netPnl).toBe(0);
+  expect(result.warnings.some(w => w.includes('gap exceeded freshness'))).toBe(true);
+});
+
+test('arrival guard is anchored to the decision quote and rejects adverse movement', () => {
+  let calls = 0;
+  const result = scripted(() => ++calls === 1 ? { action: 'open', side: 'buy', rationale: 'buy' } : hold,
+    [100, 102, 102], { worstPriceBps: 10 });
+  expect(result.execution.rejects).toBe(1);
+  expect(result.netPnl).toBe(0);
+  expect(result.trades).toHaveLength(0);
+});
+
+test('short contexts have negative quantity and use the decision bid for sizing', () => {
+  const seen: StrategyContext[] = [];
+  const result = scripted(ctx => {
+    seen.push(ctx);
+    if (!ctx.position && seen.length === 1) return { action: 'open', side: 'sell', rationale: 'short' };
+    if (ctx.position && Date.parse(ctx.now) === BASE + 100) return { action: 'close', fraction: 1, rationale: 'cover' };
+    return hold;
+  }, [100, 100, 99]);
+  expect(seen[1].position?.quantity).toBe(-1);
+  expect(result.trades).toHaveLength(1);
+  expect(result.trades[0].side).toBe('short');
+  expect(result.trades[0].quantity).toBe(1);
+  expect(result.netPnl).toBeCloseTo(0.8, 8);
+  expect(result.equity.at(-1)).toBeCloseTo(10000.8, 8);
+});
+
+test('partial closes preserve average basis and allocate every entry and exit fee once', () => {
+  const seen: StrategyContext[] = [];
+  const result = scripted(ctx => {
+    seen.push(ctx);
+    const offset = Date.parse(ctx.now) - BASE;
+    if (offset === 0) return { action: 'open', side: 'buy', rationale: 'entry' };
+    if (offset === 100) return { action: 'close', fraction: 0.5, rationale: 'half' };
+    if (offset === 200) return { action: 'close', fraction: 1, rationale: 'rest' };
+    return hold;
+  }, [99.8, 99.8, 110, 120], { feeBps: 10 });
+  expect(seen[2].position?.quantity).toBe(0.5);
+  expect(seen[2].position?.average).toBeCloseTo(100, 8);
+  expect(result.trades.map(t => t.entry)).toEqual([100, 100]);
+  expect(result.trades.map(t => t.quantity)).toEqual([0.5, 0.5]);
+  expect(result.feesUsd).toBeCloseTo(0.215, 8);
+  expect(result.netPnl).toBeCloseTo(14.785, 8);
+  expect(result.trades.reduce((sum, trade) => sum + trade.pnl, 0)).toBeCloseTo(result.netPnl, 8);
+  expect(result.equity.at(-1)).toBeCloseTo(10000 + result.netPnl, 8);
+});
+
+test('capture end neither fabricates liquidation nor misses open marked PnL', () => {
+  const result = scripted(ctx => Date.parse(ctx.now) === BASE ? { action: 'open', side: 'buy', rationale: 'entry' } : hold,
+    [99.8, 99.8, 109.8], { feeBps: 10 });
+  expect(result.trades).toHaveLength(0);
+  expect(result.feesUsd).toBeCloseTo(0.1, 8);
+  expect(result.netPnl).toBeCloseTo(9.8, 8);
+  expect(result.equity.at(-1)).toBeCloseTo(10009.8, 8);
+  expect(result.equity).toHaveLength(3);
+});
+
+test('execution validation rejects invalid depth and negative price guards without coercion', () => {
+  for (const maxDepthLevels of [0, -1, 1.5, NaN, Infinity, 5001])
+    expect(() => run(captureFrames(), { maxDepthLevels })).toThrow('maxDepthLevels');
+  expect(() => run(captureFrames(), { worstPriceBps: -1 })).toThrow('worstPriceBps');
+});
+
+test('unarrived orders are cancelled with a rejection and no synthetic end fill', () => {
+  const result = scripted(() => ({ action: 'open', side: 'buy', rationale: 'entry' }), [100, 100], { executionDelayMs: 300 });
+  expect(result.execution.rejects).toBe(1);
+  expect(result.netPnl).toBe(0);
+  expect(result.trades).toHaveLength(0);
+});
+
+test('depth walks fill only guarded displayed size at size precision', () => {
+  let calls = 0;
+  const raw = JSON.parse(bookFrame(100, 2, 100));
+  raw.order_book.asks = [{ price: '100.20', size: '0.2000' }, { price: '100.25', size: '0.3000' }, { price: '101.00', size: '9.0000' }];
+  const frames = [{ wall: BASE, mono: 0, raw: bookFrame(0, 1, 100, true) },
+    { wall: BASE + 100, mono: 100, raw: JSON.stringify(raw) }];
+  const result = scripted(() => ++calls === 1 ? { action: 'open', side: 'buy', rationale: 'depth' } : hold,
+    [], { frames, worstPriceBps: 10, feeBps: 10 });
+  expect(result.execution.partials).toBe(1);
+  expect(result.feesUsd).toBeCloseTo((100.2 * 0.2 + 100.25 * 0.3) * 0.001, 8);
+  expect(result.netPnl).toBeCloseTo(100.1 * 0.5 - (100.2 * 0.2 + 100.25 * 0.3) - result.feesUsd, 8);
+});
+
+test('unchanged recorded levels cannot supply the same counterfactual liquidity twice', () => {
+  const frames = [0, 100, 200, 300].map((offset, i) => {
+    const raw = JSON.parse(bookFrame(offset, i + 1, 99.8, i === 0));
+    if (i > 1) raw.order_book.asks = []; // entry ask has not replenished
+    return { wall: BASE + offset, mono: offset, raw: JSON.stringify(raw) };
+  });
+  let calls = 0;
+  const result = scripted(ctx => {
+    calls++;
+    if (calls === 1 || calls === 3) return { action: 'open', side: 'buy', rationale: 'entry' };
+    if (ctx.position) return { action: 'close', fraction: 1, rationale: 'exit' };
+    return hold;
+  }, [], { frames, notionalPerOrderUsd: 500 });
+  expect(result.trades).toHaveLength(1);
+  expect(result.trades[0].quantity).toBe(5);
+  expect(result.execution.rejects).toBe(1); // second buy has no remaining ask
+});
+
+test('wall clock jumps do not make an order arrive before monotonic delay', () => {
+  let calls = 0;
+  const frames = [{ wall: BASE, mono: 0, raw: bookFrame(0, 1, 100, true) },
+    { wall: BASE + 1000, mono: 100, raw: bookFrame(1000, 2, 100) }];
+  const result = scripted(() => ++calls === 1 ? { action: 'open', side: 'buy', rationale: 'entry' } : hold,
+    [], { frames, executionDelayMs: 300, feeBps: 10 });
+  expect(result.feesUsd).toBe(0);
+  expect(result.execution.rejects).toBe(1);
+});
+
+test('zero simulated delay still cannot fill on its decision frame', () => {
+  const result = scripted(() => ({ action: 'open', side: 'buy', rationale: 'entry' }), [100], { executionDelayMs: 0 });
+  expect(result.feesUsd).toBe(0);
+  expect(result.netPnl).toBe(0);
+  expect(result.execution.rejects).toBe(1);
+});
+
+test('a sequence fault cancels pre-fault pending orders before snapshot recovery', () => {
+  let calls = 0;
+  const frames = [{ wall: BASE, mono: 0, raw: bookFrame(0, 1, 100, true) },
+    { wall: BASE + 100, mono: 100, raw: bookFrame(100, 5, 100) }, // begin_nonce 4 is a gap
+    { wall: BASE + 400, mono: 400, raw: bookFrame(400, 6, 100, true) }];
+  const result = scripted(() => ++calls === 1 ? { action: 'open', side: 'buy', rationale: 'pre-gap' } : hold,
+    [], { frames, executionDelayMs: 300, feeBps: 10 });
+  expect(result.feesUsd).toBe(0);
+  expect(result.netPnl).toBe(0);
+  expect(result.execution.rejects).toBe(1);
+  expect(result.warnings.some(w => w.includes('invalid and skipped'))).toBe(true);
 });
